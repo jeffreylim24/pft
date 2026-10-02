@@ -1,0 +1,363 @@
+# Popcorn for Two — Design Spec
+
+**Date:** 2026-10-01
+**Status:** Draft, awaiting review
+
+## 1. Purpose
+
+A web app where a long-distance couple watches a YouTube video together while on a video call. The two facecams sit on a **shared stage** over the video: either person can drag and resize them, see the other's cursor, and draw on the screen.
+
+**Who it's for:** primarily the author and their partner (personal use), and secondarily a portfolio/learning project. That means:
+- No public sign-up, matchmaking, billing, or multi-tenant concerns. A shareable room link is the only "account."
+- The core experience should feel polished, and the code should be clean and well-tested enough to show off.
+- The backend is written in **Go** partly as a learning goal, so it has a real role (authoritative room state), not just a relay.
+
+## 2. Success criteria
+
+1. Two people on **different networks** can create and join a room from a link, see and hear each other, and load a YouTube video.
+2. Playback stays within **~1 second** between the two browsers, including after seeks, buffering, and ads.
+3. Moving or resizing a cam, drawing a stroke, or moving the cursor shows up on the partner's screen within roughly **200ms** under normal conditions.
+4. A browser that disconnects and reconnects within 30 seconds is restored to the full room state (video, position, cam layout, sticky ink).
+5. Go unit and integration tests, frontend unit tests, and the two-browser end-to-end test all pass.
+
+## 3. Scope
+
+### In scope (v1)
+- Rooms of exactly two people, joined by an unguessable link.
+- Peer-to-peer video and audio call (WebRTC) with TURN fallback.
+- Synced YouTube playback (load, play, pause, seek) with drift correction and auto-pause for buffering, ads, and disconnects.
+- A shared stage: draggable and resizable cams, live cursors, fading ink and sticky ink.
+- Desktop browsers (Chrome, Firefox, Safari, Edge; latest versions).
+
+### Out of scope (possible later work)
+- Local video files (both people having the file with synced playback, or one person streaming it).
+- Games.
+- Accounts, saved rooms, watch history.
+- Mobile layout.
+- Lowering movie volume while someone talks.
+- More than two people per room.
+- Streaming services with DRM (Netflix etc.).
+
+## 4. Architecture
+
+```
+Browser A ◄──── WebRTC (cams + mic, P2P, TURN fallback) ────► Browser B
+    │                                                           │
+    └──────── WebSocket ────────► Go server ◄──── WebSocket ────┘
+                                (rooms + state)
+     The YouTube player runs in each browser; only commands are synced.
+```
+
+- **Audio and video** go directly between the browsers over WebRTC. If a direct connection isn't possible, they go through a hosted TURN relay (Cloudflare or Metered free tier).
+- **All other shared state** (playback, cam layout, cursors, ink, presence, WebRTC signaling) goes through the Go server over one WebSocket per browser. The server is the **single source of truth** for room state.
+- **No database.** All room state is in memory.
+
+### 4.1 Repository layout
+
+```
+/
+  server/                      Go module
+    cmd/server/main.go         entry point: config, HTTP server, embedded frontend
+    internal/protocol/         message structs + JSON encoding
+    internal/room/             room state, pure reducer, hub goroutine, registry
+    internal/httpapi/          HTTP handlers: create room, WebSocket upgrade
+    internal/turn/             fetches short-lived TURN credentials
+  web/                         Vite + React + TypeScript
+    src/protocol/              message types (mirror of Go structs)
+    src/net/                   WebSocket client
+    src/call/                  WebRTC
+    src/player/                YouTube player wrapper + fake for tests
+    src/stage/                 stage layout, cams, coordinate helpers
+    src/ink/                   drawing canvas
+    src/cursors/               remote cursor rendering
+    src/app/                   pages (landing, lobby, room), store, toolbar
+  protocol-fixtures/           example JSON messages both test suites validate
+  e2e/                         Playwright tests
+  docs/
+```
+
+### 4.2 Backend (Go)
+
+- **HTTP endpoints**
+  - `POST /api/rooms`: creates a room and returns `{ roomId }`. The room ID is 128 random bits, base64url-encoded (22 characters).
+  - `GET /ws?room=<id>`: upgrades to a WebSocket. Unknown room → HTTP 404. Room already has two active participants → HTTP 409.
+  - `GET /*`: serves the built React app, embedded in the binary with `embed.FS`, with SPA fallback to `index.html`.
+- **WebSocket library:** `github.com/coder/websocket`.
+- **Room hub:** each room is **one goroutine that owns the room's state**. Connections send events to it on a channel. Nothing else reads or writes the state, so no locks are needed. Each connection has its own writer goroutine with a buffered outbound queue. A connection whose queue fills up is closed, so one slow client can't stall the room.
+- **Pure reducer:** the room logic lives in a pure function:
+  ```go
+  func Apply(state RoomState, ev Event, now time.Time) (RoomState, []Outbound)
+  ```
+  The hub goroutine only receives events, calls `Apply`, and sends the resulting outbound messages. Timers (grace-period expiry, room expiry) arrive as events too, so all logic is testable with a fake clock.
+- **Registry:** a map from room ID to hub, guarded by a mutex. It creates hubs and removes them when they expire.
+- **Room lifecycle:** a room expires **30 minutes** after it becomes empty. A room that's created but never joined expires after 30 minutes too.
+- **TURN credentials:** on each join, the server requests short-lived ICE server credentials from the TURN provider's API and includes them in the `welcome` message. The provider API key exists only on the server.
+- **Config (env vars):** `PORT`, `TURN_PROVIDER`, `TURN_KEY_ID`, `TURN_API_TOKEN`. If TURN isn't configured, the server falls back to a public STUN server only and logs a warning.
+
+### 4.3 Frontend (React + TypeScript)
+
+- **Build:** Vite. In development, the Vite dev server proxies `/api` and `/ws` to the Go server on `:8080`.
+- **State:** a single Zustand store holds the client's copy of room state, and only the server's messages change it. One exception: things you're actively doing (dragging your cam, drawing a stroke) render locally straight away, without waiting for the server.
+- **Modules (one job each):**
+  - `net/`: typed WebSocket client. It handles the `hello`/`welcome` handshake, reconnects with exponential backoff (0.5s, 1s, 2s, 4s, capped at 8s), and measures the clock offset. It's the only code that talks to the server.
+  - `call/`: `getUserMedia` (with echo cancellation and noise suppression on), the `RTCPeerConnection` using the **perfect negotiation** pattern, ICE restarts, and the remote stream.
+  - `player/`: the interface `Player { load(videoId); play(); pause(); seek(seconds); getCurrentTime(); getDuration(); onStateChange(cb) }`. `YouTubePlayer` implements it using the IFrame API. `FakePlayer` is a test double used by end-to-end tests.
+  - `stage/`: the stage container plus coordinate helpers (`toFraction`, `toPixels`). It also handles cam tiles and drag/resize, using hand-written pointer-event code. Positions are stored as fractions, which a pixel-based library like react-rnd would fight against.
+  - `ink/`: two canvases (sticky and fading), stroke rendering, fade animation, draw-mode handling.
+  - `cursors/`: renders the partner's cursor with their name and color, and smooths its movement between updates.
+  - `app/`: pages (landing, lobby, room), the toolbar, and wiring.
+
+## 5. The stage
+
+- The stage is the **largest 16:9 rectangle** that fits the window above the toolbar, centered with letterbox bars.
+- All positions are **fractions of the stage** (0–1 on each axis), so layouts line up across different screen sizes.
+- **Layers, bottom to top:**
+  1. YouTube player (`controls=0`, `pointer-events: none`; the app provides its own controls)
+  2. Cam tiles
+  3. Sticky-ink canvas
+  4. Fading-ink canvas
+  5. Remote cursor
+- **Draw mode:**
+  - **Off** (the default): the ink canvases ignore the pointer, so cams can be dragged and resized.
+  - **On**: the ink canvases capture the pointer and drawing uses the selected pen (fading or sticky).
+  - Pressing `D` toggles draw mode, keeping the last pen used.
+  - Cursor tracking works in both modes, because it listens on the stage container.
+- **Cams**
+  - The cam ID equals the participant ID.
+  - Default positions: the first participant bottom-left and the second bottom-right, each 22% of the stage width.
+  - Each cam keeps its camera's aspect ratio and is resized from its corners.
+  - Minimum width is 8% of the stage, and a cam is always kept fully inside the stage.
+  - Your own cam is shown **mirrored** on your screen only (selfie convention). Your partner sees it unmirrored.
+  - If a camera is off or permission was denied, the tile shows the person's initial on their color.
+- **Toolbar** (below the stage):
+  - YouTube URL input and a **Load** button
+  - Play/pause and a seek bar with time
+  - Local volume (not synced)
+  - Mic mute and camera on/off
+  - Pen selector (off / fading / sticky) and **Clear** (removes all sticky ink)
+  - **Leave**
+
+## 6. Protocol
+
+All messages are JSON with the shape `{ "type": string, ...fields }`. Coordinates are fractions of the stage, times are in seconds (playback) or Unix milliseconds (clock). The server checks every incoming message (section 9.2).
+
+### 6.1 Client → server
+
+| type | fields | notes |
+|---|---|---|
+| `hello` | `name`, `color`, `pageSession`, `resumeToken?` | Must be the first message. `pageSession` is a random ID generated once per page load. `resumeToken` reclaims a held spot (section 9.1). |
+| `ping` | `t0` | For measuring the clock offset. |
+| `playback.load` | `videoId` | |
+| `playback.play` | `position` | |
+| `playback.pause` | `position` | |
+| `playback.seek` | `position` | |
+| `playback.stalled` | — | The local player isn't advancing while the room is playing (section 7.3). |
+| `playback.ready` | — | The local player is buffered and paused at the room position. |
+| `cam.grab` | `camId` | |
+| `cam.move` | `camId`, `rect {x,y,w,h}` | Ignored unless the sender holds the cam. |
+| `cam.release` | `camId`, `rect` | The final position when the pointer is released. |
+| `cursor` | `x`, `y` | Throttled to ~30 Hz. |
+| `cursor.hide` | — | The pointer left the stage. |
+| `ink.points` | `strokeId`, `mode`, `color`, `width`, `points [[x,y],…]` | Batched about every 33ms, at most 64 points per batch. |
+| `ink.end` | `strokeId` | |
+| `ink.clear` | — | Clears all sticky strokes. |
+| `signal` | `data` | A WebRTC description or ICE candidate. The server passes it through without reading it. |
+
+### 6.2 Server → client
+
+| type | fields | notes |
+|---|---|---|
+| `welcome` | `you`, `resumeToken`, `polite`, `iceServers`, `snapshot` | Reply to `hello`. `polite` assigns the perfect-negotiation role: the first person in the room is impolite, the second is polite. The role stays with the participant ID across resumes. |
+| `pong` | `t0`, `serverTime` | |
+| `participant.joined` | `participant {id,name,color,pageSession}` | Sent on a first join and on every resume. |
+| `participant.reconnecting` | `id` | Their connection dropped and their spot is being held. |
+| `participant.left` | `id` | The grace period expired, or they left on purpose. |
+| `playback` | `state` | The full playback state (section 7.1) after any change. |
+| `cam` | `camId`, `rect`, `holder` | `holder` is a participant ID or `null`. |
+| `cursor` | `from`, `x`, `y` | Passed along, not stored. |
+| `cursor.hide` | `from` | |
+| `ink.points` | `from`, `strokeId`, `mode`, `color`, `width`, `points` | |
+| `ink.end` | `from`, `strokeId` | |
+| `ink.clear` | `from` | |
+| `signal` | `from`, `data` | |
+| `error` | `code`, `message` | Codes: `bad_message`, `rate_limited`, `room_full`, `not_found`. |
+
+### 6.3 Snapshot
+
+```
+snapshot = {
+  participants: [{ id, name, color, pageSession, connected }],
+  playback: PlaybackState,
+  cams: { [camId]: { rect, holder } },
+  stickyStrokes: [{ id, author, color, width, points }]
+}
+```
+
+### 6.4 Keeping Go and TypeScript in sync
+
+The message types are written by hand in both `server/internal/protocol` and `web/src/protocol`. `protocol-fixtures/` holds one example JSON file per message type. The Go tests decode each fixture into its struct and re-encode it, checking nothing is lost. The TypeScript tests check each fixture against its type with a runtime validator (zod schemas, which also generate the TS types). If the format changes on one side only, a test fails.
+
+## 7. Playback sync
+
+### 7.1 State
+
+```
+PlaybackState = {
+  videoId: string | null,
+  playing: boolean,
+  position: number,        // seconds, as of updatedAt
+  updatedAt: number,       // server Unix ms
+  waitingFor: string | null,  // participant id we auto-paused for
+  autoResume: boolean
+}
+```
+
+The expected position at server time `now` is `position + (playing ? (now − updatedAt)/1000 : 0)`.
+
+### 7.2 Commands
+
+- When someone sends `play`, `pause` or `seek`, the server sets `position` and `updatedAt = now`, sets `playing` to match the command, clears `waitingFor`/`autoResume`, and broadcasts `playback`.
+- `load` sets the new `videoId`, `position = 0`, `playing = false`.
+- Both browsers, including the sender, apply only the broadcast state. Nobody acts on their own command before the server confirms it. The delay this adds when you press play is about one round trip to the server, which is acceptable.
+
+### 7.3 Clock offset, drift and stalls
+
+- **Clock offset:**
+  - On connect, the client sends 5 pings, picks the one with the shortest round-trip time, and computes `offset = serverTime − (t0 + rtt/2)`.
+  - It repeats this every 30 seconds. Server "now" is then `Date.now() + offset`.
+- **Drift check:**
+  - Every 2 seconds, while the room is playing and the player isn't within 3 seconds of a seek or load, the client compares the player's `getCurrentTime()` with the expected position.
+  - If they differ by more than **1.0 second**, it seeks to the expected position. It doesn't try speeding playback up or down, because YouTube only offers coarse speed steps.
+- **Stall detection:**
+  - If the room is playing and the local player hasn't advanced for more than **2 seconds**, the client sends `playback.stalled`. That covers buffering and ads, which the IFrame API doesn't report directly.
+  - The server then auto-pauses: `playing = false`, `position = expected now`, `waitingFor = sender`, `autoResume = true`. The UI shows "Waiting for {name}…".
+- **Recovery:**
+  - The stalled client waits until its player is playable again (for example, the ad has ended), pauses and seeks to `position`, then sends `playback.ready`.
+  - If `autoResume` is set and the sender is the person being waited for, the server resumes: `playing = true`, `updatedAt = now`, `waitingFor = null`.
+- **Manual override:** any manual `play`, `pause` or `seek` clears the waiting state.
+- **After a reconnect:** if the snapshot's `waitingFor` is the client's own ID, it loads the video, pauses and seeks to `position`, and sends `playback.ready` once the player is buffered. That's what lets a partner who dropped out auto-resume (section 9.4).
+
+### 7.4 YouTube errors
+
+- The URL input accepts `youtube.com/watch?v=`, `youtu.be/`, `youtube.com/shorts/` and `youtube.com/embed/` links, plus bare 11-character IDs.
+- If the input can't be parsed, the error shows locally and nothing is sent.
+- If the player reports error 2, 5, 100, 101 or 150 (invalid, not found, or embedding disabled), the client shows "This video can't be played here." The video is already loaded in the room at that point, so the person who loaded it can load another one.
+
+## 8. Layout, cursors and ink
+
+### 8.1 Cams (last grab wins)
+
+- `cam.grab` sets `holder` to the person grabbing, taking it from the other person if they were holding it. The server broadcasts `cam`.
+- `cam.move` from anyone other than the holder is ignored.
+- The server clamps every rectangle so it stays inside the stage and meets the minimum size, then broadcasts it.
+- `cam.release` applies the final rectangle and clears `holder`.
+- If the holder disconnects, `holder` is cleared.
+- **What the person dragging sees:** local rendering follows their pointer straight away. Incoming `cam` updates for that cam are ignored while they're dragging it, unless the update shows a different holder. In that case, their drag ends (they've been overridden).
+
+### 8.2 Cursors
+
+- The client sends its position at about 30 Hz while the pointer is over the stage, and `cursor.hide` when it leaves.
+- The server passes cursor messages along without storing them.
+- The partner's browser smooths the movement between updates (about 80ms behind live) and fades the cursor out after 3 seconds without movement.
+
+### 8.3 Ink
+
+- **While drawing**, the client sends points in batches about every 33ms and shows the stroke locally straight away. Lifting the pen sends `ink.end`.
+- **Stroke limits:** each person has their own color, and stroke width is fixed at 0.004 of the stage width. A stroke is capped at 2,000 points; after that the client ends it and starts a new one automatically.
+- **Fading strokes:**
+  - The server passes them along and doesn't store them.
+  - On both screens, a fading stroke stays fully visible while it's being drawn, then fades out over **3 seconds** after `ink.end`.
+  - A stroke that never gets `ink.end` (for example, because the sender disconnected) starts fading 1 second after its last batch.
+- **Sticky strokes:**
+  - The server adds the points to `stickyStrokes` and passes them along.
+  - If there are more than **500** sticky strokes, the oldest are dropped.
+  - `ink.clear` empties the list and is broadcast to both people.
+
+## 9. Call, joining and error handling
+
+### 9.1 Joining and reconnecting
+
+1. **Landing page:** the **Create room** button sends `POST /api/rooms` and goes to `/r/<roomId>`.
+2. **Lobby:**
+   - Asks for a name and a color (from a preset palette). These are remembered in `localStorage`.
+   - Shows a camera and mic preview, with the permission prompt.
+   - Shows a "Headphones recommended" tip.
+   - Has a **Join** button.
+3. **Join:** the client opens the WebSocket, sends `hello`, and receives `welcome`. It stores the `resumeToken` in `sessionStorage`.
+4. **Reconnecting:**
+   - When a connection drops, the server marks the person disconnected and holds their spot for **30 seconds**, broadcasting `participant.reconnecting`.
+   - If a `hello` comes back with a valid `resumeToken` in that time, the person gets the same participant ID back and the full snapshot.
+   - After 30 seconds without one, the server broadcasts `participant.left` and frees the spot.
+5. **Room full:** a third person gets HTTP 409, and the client shows a "This room is full" page.
+
+### 9.2 Server validation and limits
+
+- **Size limits:** messages over 16 KB close the connection, and `ink.points` batches over 64 points are rejected.
+- **Bad messages:** unknown `type`s or wrong field types get an `error bad_message` reply, and the message is dropped. The connection stays open.
+- **Rate limiting:** each connection has a token bucket of 100 messages per second, with bursts up to 200. Messages over the limit are dropped, with an `error rate_limited` sent at most once per second.
+- **Clamping:** all coordinates are clamped to [0,1], and playback positions to ≥ 0.
+- **Video IDs:** `videoId` must match `^[A-Za-z0-9_-]{11}$`.
+- **Signaling:** `signal` messages are passed along only when both people are connected.
+
+### 9.3 Video call
+
+- **Perfect negotiation:** each person's role comes from `welcome.polite`, and `signal` messages carry the WebRTC handshake (descriptions and ICE candidates).
+- **When to rebuild the connection:** each client remembers the partner's `pageSession`. When `participant.joined` arrives with a **different** `pageSession` (the partner reloaded or opened a new tab), the client closes its `RTCPeerConnection` and starts a fresh one. When it's the **same** `pageSession` (only the partner's WebSocket dropped), the existing call is kept.
+- **Connection drops:**
+  - If the connection state becomes `failed`, the impolite peer restarts the connection (an ICE restart).
+  - If it hasn't reconnected within 15 seconds, the remote tile shows "Video lost" with a **Retry** button, which rebuilds the peer connection.
+  - Watching, ink and cursors keep working throughout, because they don't depend on the call.
+- **Echo:** browser echo cancellation is on, but it probably won't remove YouTube audio coming out of the speakers. That's why the lobby recommends headphones. Mic mute is always available.
+
+### 9.4 Failure table
+
+| Situation | Behavior |
+|---|---|
+| Camera or mic permission denied | Join anyway. The tile shows the person's initial, with a "Retry camera" button. |
+| WebSocket drops | "Reconnecting…" banner, then backoff retries, then a resume with the full snapshot. |
+| Partner disconnects | Playback auto-pauses with `waitingFor` = the partner. If they resume within 30 seconds and send `ready`, playback auto-resumes. If the grace period expires, the room stays paused and `waitingFor` is cleared. |
+| WebRTC fails | ICE restart. After 15 seconds, "Video lost" and a Retry button. |
+| Bad URL or video that can't be embedded | Inline message. The room is otherwise unaffected. |
+| Unknown room ID | "Room not found" page with a **Create room** button. |
+
+## 10. Testing
+
+- **Go unit tests** (`internal/room`) call `Apply` with a fake clock and cover:
+  - the expected-position math
+  - play, pause, seek and load
+  - the stall, auto-pause and ready-to-resume sequence
+  - a manual override clearing the waiting state
+  - grab takeover and rejecting moves from non-holders
+  - rectangle clamping
+  - the sticky-ink cap and clearing it
+  - room full
+  - the resume token within the grace period, and the grace period expiring
+  - room expiry
+- **Go integration test:** an `httptest` server with two real WebSocket clients. Both join, one sends commands, and the test checks that both receive identical broadcasts. It also covers reconnecting with a resume token.
+- **Protocol fixtures:** both test suites check every file in `protocol-fixtures/` (section 6.4).
+- **Frontend unit tests (Vitest):**
+  - YouTube URL parsing
+  - the clock offset calculation
+  - expected position and the drift decision
+  - `toFraction`/`toPixels`
+  - fade timing for ink
+  - cursor smoothing
+- **End-to-end (Playwright):**
+  - Two browser contexts with Chrome's fake camera flags (`--use-fake-device-for-media-stream`, `--use-fake-ui-for-media-stream`). The app runs with `FakePlayer` enabled (`?player=fake`, which only works in development builds).
+  - Checks: both join and see two cam tiles, a cam drag in A moves the cam in B, a stroke in A appears in B, a cursor in A appears in B, and play/pause in A changes the state in B.
+- **Manual check before release:** a real call between two different networks (for example, one person on a phone hotspot), confirming video connects through TURN when needed and playback stays in sync through a YouTube ad.
+
+## 11. Deployment
+
+- A single Fly.io app runs the Go binary, with the built frontend embedded in it. A Dockerfile uses a multi-stage build: Node builds `web/`, then Go builds `server/` with the static files embedded.
+- WebSockets work over Fly's standard HTTPS. A single machine is enough, since rooms are in memory and there are only two users.
+- TURN uses a hosted free tier. Credentials are set as Fly secrets.
+
+## 12. Build order
+
+1. Go server: rooms, WebSocket, `hello`/`welcome`, snapshot, reconnect, plus the protocol fixtures.
+2. Frontend shell: landing page, lobby, `net/` client, room page with the stage.
+3. Synced YouTube playback (`player/`, clock offset, drift, stalls).
+4. WebRTC call plus cam tiles on the stage with drag and resize.
+5. Cursors and ink.
+6. Polish, error states, end-to-end tests, deployment.
