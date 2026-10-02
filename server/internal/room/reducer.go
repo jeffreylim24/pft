@@ -169,6 +169,26 @@ func (r *reducer) message(ev MessageEvent) {
 	case protocol.PlaybackLoad, protocol.PlaybackPlay, protocol.PlaybackPause,
 		protocol.PlaybackSeek, protocol.PlaybackStalled, protocol.PlaybackReady:
 		r.playback(id, m)
+	case protocol.CamGrab:
+		r.camGrab(id, m.CamID)
+	case protocol.CamMove:
+		r.camMove(id, m.CamID, m.Rect, false)
+	case protocol.CamRelease:
+		r.camMove(id, m.CamID, m.Rect, true)
+	case protocol.Cursor:
+		r.toOthers(id, protocol.CursorRelay{From: id, X: m.X, Y: m.Y})
+	case protocol.CursorHide:
+		r.toOthers(id, protocol.CursorHideRelay{From: id})
+	case protocol.InkPoints:
+		r.inkPoints(r.s.Participants[i], m)
+	case protocol.InkEnd:
+		r.toOthers(id, protocol.InkEndRelay{From: id, StrokeID: m.StrokeID})
+	case protocol.InkClear:
+		r.inkClear(id)
+	case protocol.Signal:
+		// toOthers skips a disconnected partner, so signals only flow while
+		// both people are connected.
+		r.toOthers(id, protocol.SignalRelay{From: id, Data: m.Data})
 	}
 }
 
@@ -184,6 +204,7 @@ func (r *reducer) disconnect(connID uint64) {
 	if r.s.Playback.Playing {
 		r.autoPause(id)
 	}
+	r.releaseCamsHeldBy(id)
 }
 
 func (r *reducer) tick() {
@@ -206,6 +227,7 @@ func (r *reducer) remove(i int) {
 	delete(r.s.Cams, p.ID)
 	r.broadcast(protocol.ParticipantLeft{ID: p.ID})
 	r.stopWaitingFor(p.ID)
+	r.releaseCamsHeldBy(p.ID)
 	if len(r.s.Participants) == 0 {
 		r.s.EmptySince = r.now
 	}
