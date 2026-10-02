@@ -121,40 +121,53 @@ func (h *Hub) Disconnect(connID uint64) {
 // Deliver sends m straight to one connection, bypassing room logic. Used for
 // errors the connection detects itself, like rate limiting.
 func (h *Hub) Deliver(connID uint64, m protocol.Message) {
-	h.do(func() { h.dispatch(Outbound{ConnID: connID, Msg: m}) })
+	h.do(func() {
+		if !h.dispatch(Outbound{ConnID: connID, Msg: m}) {
+			h.apply(DisconnectEvent{ConnID: connID})
+		}
+	})
 }
 
 func (h *Hub) apply(ev Event) {
 	var out []Outbound
 	h.state, out = Apply(h.state, ev, h.cfg.Now())
+	var dropped []uint64
 	for _, o := range out {
-		h.dispatch(o)
+		if !h.dispatch(o) {
+			dropped = append(dropped, o.ConnID)
+		}
+	}
+	// Disconnect slow connections only after this event's messages have gone
+	// out, so the partner gets the disconnect's updates last, not stale ones.
+	for _, connID := range dropped {
+		h.apply(DisconnectEvent{ConnID: connID})
 	}
 }
 
 // dispatch encodes on the hub goroutine, so the bytes never alias room state
-// that a later event might change.
-func (h *Hub) dispatch(o Outbound) {
+// that a later event might change. It returns false if it dropped the
+// connection for being too slow; the caller must then apply its disconnect.
+func (h *Hub) dispatch(o Outbound) bool {
 	c, ok := h.conns[o.ConnID]
 	if !ok {
-		return
+		return true
 	}
 	if o.Msg != nil {
 		b, err := protocol.Encode(o.Msg)
 		if err != nil {
 			h.cfg.Logger.Error("encode failed", "room", h.id, "type", o.Msg.MsgType(), "err", err)
-			return
+			return true
 		}
 		if !c.Enqueue(b) {
 			h.cfg.Logger.Warn("dropping slow connection", "room", h.id, "conn", c.ID())
 			delete(h.conns, c.ID())
 			c.Kill()
-			h.apply(DisconnectEvent{ConnID: c.ID()})
-			return
+			return false
 		}
 	}
 	if o.Close != 0 {
 		delete(h.conns, o.ConnID)
 		c.Close(o.Close)
 	}
+	return true
 }

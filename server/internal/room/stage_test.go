@@ -3,6 +3,7 @@ package room
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"testing"
 
 	"popcorn/internal/protocol"
@@ -143,14 +144,20 @@ func TestStickyPointCapKeepsWelcomeSmall(t *testing.T) {
 	h := pairRoom(t)
 	strokes := MaxStickyPoints/MaxStrokePoints + 1
 	for i := range strokes {
-		h.send(1, ink(fmt.Sprintf("s%d", i), protocol.InkSticky, MaxStrokePoints))
+		m := ink(fmt.Sprintf("s%d", i), protocol.InkSticky, MaxStrokePoints)
+		for j := range m.Points {
+			// Realistic coordinates, at the 4-decimal precision protocol.DecodeClient leaves.
+			x, y := 0.1234+float64(j%7000)/10000, 0.8765-float64(j%5000)/10000
+			m.Points[j] = protocol.Point{math.Round(x*1e4) / 1e4, math.Round(y*1e4) / 1e4}
+		}
+		h.send(1, m)
 	}
 	if h.s.stickyPoints > MaxStickyPoints || h.s.Sticky[0].ID != "s1" {
 		t.Fatalf("points = %d, first stroke %s", h.s.stickyPoints, h.s.Sticky[0].ID)
 	}
 	w := one[protocol.Welcome](t, h.hello(3, "tok-p1"), 3)
 	b, _ := json.Marshal(w)
-	if len(b) > 4<<20 {
+	if len(b) > 2<<20 {
 		t.Errorf("welcome is %d bytes", len(b))
 	}
 }

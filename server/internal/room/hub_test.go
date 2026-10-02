@@ -184,3 +184,23 @@ func TestRegistryCapsRoomCount(t *testing.T) {
 		t.Errorf("err = %v, want ErrTooManyRooms", err)
 	}
 }
+
+func TestHubDropDuringBroadcastKeepsPartnerUpToDate(t *testing.T) {
+	h := startHub(t)
+	a, b := &fakeConn{id: 1}, &fakeConn{id: 2}
+	h.Join(a, helloEvent("a")) // a is first, so a's outbound comes before b's
+	h.Join(b, helloEvent("b"))
+	h.Message(1, protocol.PlaybackLoad{VideoID: "dQw4w9WgXcQ"})
+	h.Message(1, protocol.PlaybackPlay{Position: 0})
+	eventually(t, "b sees playing", func() bool { return len(received[protocol.PlaybackUpdate](b)) == 2 })
+	a.setFull()
+	h.Message(2, protocol.PlaybackSeek{Position: 50})
+	eventually(t, "b told a is reconnecting", func() bool {
+		return len(received[protocol.ParticipantReconnecting](b)) == 1
+	})
+	updates := received[protocol.PlaybackUpdate](b)
+	last := updates[len(updates)-1].State
+	if last.Playing || last.WaitingFor == nil {
+		t.Fatalf("b's last playback is %+v; the room is paused waiting for a", last)
+	}
+}

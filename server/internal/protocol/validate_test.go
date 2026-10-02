@@ -66,6 +66,11 @@ func TestDecodeClientNormalizes(t *testing.T) {
 			`{"type":"hello","name":"  Alex  ","color":"#112233","pageSession":"p"}`,
 			Hello{Name: "Alex", Color: "#112233", PageSession: "p"},
 		},
+		{
+			"ink points are rounded to 4 decimals",
+			`{"type":"ink.points","strokeId":"s","mode":"sticky","points":[[0.38472222222222224,0.12345678]]}`,
+			InkPoints{StrokeID: "s", Mode: InkSticky, Points: []Point{{0.3847, 0.1235}}},
+		},
 		{"messages without fields are fine", `{"type":"playback.stalled"}`, PlaybackStalled{}},
 	}
 	for _, c := range cases {

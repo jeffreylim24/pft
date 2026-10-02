@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"math"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -117,7 +118,7 @@ func normalize(m ClientMsg) (ClientMsg, error) {
 			return nil, badf("ink.points: a batch must have 1-%d points", MaxInkBatch)
 		}
 		for i, p := range v.Points {
-			v.Points[i] = Point{unit(p[0]), unit(p[1])}
+			v.Points[i] = Point{inkCoord(p[0]), inkCoord(p[1])}
 		}
 		return v, nil
 	case InkEnd:
@@ -132,5 +133,9 @@ func normalize(m ClientMsg) (ClientMsg, error) {
 func validID(s string) bool { return s != "" && len(s) <= MaxIDLen }
 
 func unit(v float64) float64 { return min(max(v, 0), 1) }
+
+// inkCoord clamps and rounds to 4 decimals: still sub-pixel on a 4K stage,
+// but it shrinks a full sticky board's JSON by more than half.
+func inkCoord(v float64) float64 { return math.Round(unit(v)*1e4) / 1e4 }
 
 func unitRect(r Rect) Rect { return Rect{X: unit(r.X), Y: unit(r.Y), W: unit(r.W), H: unit(r.H)} }
