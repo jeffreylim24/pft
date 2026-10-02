@@ -157,6 +157,7 @@ func (r *reducer) message(ev MessageEvent) {
 	if i < 0 {
 		return // not joined, or a connection that has been replaced
 	}
+	id := r.s.Participants[i].ID
 	switch m := ev.Msg.(type) {
 	case protocol.Hello:
 		r.send(ev.ConnID, badMessage("already joined"))
@@ -165,6 +166,9 @@ func (r *reducer) message(ev MessageEvent) {
 	case protocol.Leave:
 		r.remove(i)
 		r.closeConn(ev.ConnID, nil, protocol.CloseNormal)
+	case protocol.PlaybackLoad, protocol.PlaybackPlay, protocol.PlaybackPause,
+		protocol.PlaybackSeek, protocol.PlaybackStalled, protocol.PlaybackReady:
+		r.playback(id, m)
 	}
 }
 
@@ -175,7 +179,11 @@ func (r *reducer) disconnect(connID uint64) {
 	}
 	p := &r.s.Participants[i]
 	p.ConnID, p.DisconnectedAt = 0, r.now
-	r.toOthers(p.ID, protocol.ParticipantReconnecting{ID: p.ID})
+	id := p.ID
+	r.toOthers(id, protocol.ParticipantReconnecting{ID: id})
+	if r.s.Playback.Playing {
+		r.autoPause(id)
+	}
 }
 
 func (r *reducer) tick() {
@@ -197,6 +205,7 @@ func (r *reducer) remove(i int) {
 	r.s.Participants = slices.Delete(r.s.Participants, i, i+1)
 	delete(r.s.Cams, p.ID)
 	r.broadcast(protocol.ParticipantLeft{ID: p.ID})
+	r.stopWaitingFor(p.ID)
 	if len(r.s.Participants) == 0 {
 		r.s.EmptySince = r.now
 	}
