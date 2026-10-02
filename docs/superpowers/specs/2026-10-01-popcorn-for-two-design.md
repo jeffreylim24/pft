@@ -385,3 +385,8 @@ These fill gaps found when the spec was reviewed for implementation. Where they 
 - **Message rate:** `cam.move` is throttled to about 30 Hz, like cursors. Cursor, cam and ink traffic together then stay under the 100 messages per second limit.
 - **End of video:** when the player reports "ended", or the expected position is past the video's duration, the client doesn't send `playback.stalled` and the drift check clamps to the duration. Otherwise the end of a video would loop through stall, pause and resume.
 - **Reloading:** after a reload, the person goes back through the lobby. Their name and color are filled in, and they press **Rejoin**. The click counts as a user gesture, so the browser allows autoplay with sound and the camera starts again.
+- **Liveness (plan 2):** besides the clock rounds, the client sends a heartbeat `ping` every 10 seconds. If nothing arrives within 5 seconds of a ping, or no `welcome` arrives within 10 seconds of opening a socket, it drops the socket and reconnects. Without this a half-open socket could outlast the 30-second grace period.
+- **Leaving the page (plan 2):** navigating away from `/r/<id>` (Back, or a typed URL) sends `leave` and turns the camera off.
+- **Another tab took over (plan 2):** close code 4001 shows "You're in this room in another tab" with **Use this tab instead**, which goes back to the lobby; **Rejoin** then takes the seat back.
+- **Unknown rooms (plan 2):** there's no room-lookup endpoint, so a stale link shows the lobby first and "Room not found" after **Join**.
+- **Test tooling (plan 2):** Vitest 4 and jsdom 29, because Vitest 5 and jsdom 30 don't support Node 25. Vitest workers run with `--no-experimental-webstorage`, because Node 25's own `localStorage` hides jsdom's.
