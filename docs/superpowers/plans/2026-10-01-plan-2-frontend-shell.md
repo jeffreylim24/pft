@@ -88,7 +88,7 @@ This is plan 2 of 6. Plan 1 (Go server) has merged.
 These go beyond what the spec says. Task 12 records them in spec section 13.
 
 1. **Heartbeat and welcome timeout** (see Global Constraints). A browser doesn't notice a half-open socket for minutes, so without these, a Wi-Fi drop could outlast the server's 30-second grace period.
-2. **Back means leave.** Navigating away from `/r/<id>` (the Back button or a typed URL) sends `leave` and turns the camera off.
+2. **Back means leave, inside the app.** Going from `/r/<id>` back to the landing page within the app (Back, when the previous history entry is the app's own) sends `leave` and turns the camera off. Leaving the document any other way (closing the tab, a typed URL, Back out of the site) holds the seat for the 30-second grace period, since a reload must keep it.
 3. **"Replaced" page.** When another tab takes the seat (close code 4001), this tab shows "You're in this room in another tab" with a **Use this tab instead** button. The button goes back to the lobby, where **Rejoin** takes the seat back.
 4. **The camera stays on after joining.** The lobby's stream is kept for plan 4's cam tiles, and it's stopped when the person leaves the room page.
 5. **Copy link.** While someone is alone in the room, the stage shows "Waiting for your partner" with a **Copy link** button.
@@ -4296,7 +4296,7 @@ In `docs/superpowers/specs/2026-10-01-popcorn-for-two-design.md`, section 13, ad
 
 ```markdown
 - **Liveness (plan 2):** besides the clock rounds, the client sends a heartbeat `ping` every 10 seconds. If nothing arrives within 5 seconds of a ping, or no `welcome` arrives within 10 seconds of opening a socket, it drops the socket and reconnects. Without this a half-open socket could outlast the 30-second grace period.
-- **Leaving the page (plan 2):** navigating away from `/r/<id>` (Back, or a typed URL) sends `leave` and turns the camera off.
+- **Leaving the page (plan 2):** going from a room back to the landing page inside the app (the **Leave** button, or Back when the previous page is the app's own) sends `leave` and turns the camera off. Any other way of leaving the page (closing the tab, typing a URL, Back out of the site) holds the seat for the 30-second grace period, like a dropped connection. A `pagehide` handler can't send `leave`, because a reload must keep the seat.
 - **Another tab took over (plan 2):** close code 4001 shows "You're in this room in another tab" with **Use this tab instead**, which goes back to the lobby; **Rejoin** then takes the seat back.
 - **Unknown rooms (plan 2):** there's no room-lookup endpoint, so a stale link shows the lobby first and "Room not found" after **Join**.
 - **Test tooling (plan 2):** Vitest 4 and jsdom 29, because Vitest 5 and jsdom 30 don't support Node 25. Vitest workers run with `--no-experimental-webstorage`, because Node 25's own `localStorage` hides jsdom's.

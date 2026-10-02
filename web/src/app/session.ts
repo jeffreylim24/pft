@@ -68,7 +68,12 @@ export function resetSession(): void {
   useAppStore.setState(initialAppState)
 }
 
-/** Leaving the room's page (Back, or a typed URL) leaves the room and turns the camera off. */
+/**
+ * Moving off the room's route inside the app (Back to the landing page, or
+ * Leave) leaves the room and turns the camera off. Leaving the document
+ * itself (closing the tab, a typed URL) can't be told apart from a reload,
+ * so the server holds the seat for its grace period instead.
+ */
 export function syncSessionWithRoute(route: Route): void {
   const routeRoom = route.page === 'room' ? route.roomId : null
   const { roomId } = useAppStore.getState()
