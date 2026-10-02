@@ -1,7 +1,7 @@
 # Popcorn for Two — Design Spec
 
 **Date:** 2026-10-01
-**Status:** Draft, awaiting review
+**Status:** Reviewed; amended during planning (2026-10-01, see section 13)
 
 ## 1. Purpose
 
@@ -79,8 +79,8 @@ Browser A ◄──── WebRTC (cams + mic, P2P, TURN fallback) ────�
 ### 4.2 Backend (Go)
 
 - **HTTP endpoints**
-  - `POST /api/rooms`: creates a room and returns `{ roomId }`. The room ID is 128 random bits, base64url-encoded (22 characters).
-  - `GET /ws?room=<id>`: upgrades to a WebSocket. Unknown room → HTTP 404. Room already has two active participants → HTTP 409.
+  - `POST /api/rooms`: creates a room and returns `201 { roomId }`. The room ID is 128 random bits, base64url-encoded (22 characters). If 1,000 rooms already exist it returns 503.
+  - `GET /ws?room=<id>`: upgrades to a WebSocket. Rejections are sent **in-band**, because browsers can't read the HTTP status of a failed upgrade: unknown room → `error not_found` then close code 4404; a `hello` when both seats are taken (including a seat held for reconnection) → `error room_full` then close code 4409.
   - `GET /*`: serves the built React app, embedded in the binary with `embed.FS`, with SPA fallback to `index.html`.
 - **WebSocket library:** `github.com/coder/websocket`.
 - **Room hub:** each room is **one goroutine that owns the room's state**. Connections send events to it on a channel. Nothing else reads or writes the state, so no locks are needed. Each connection has its own writer goroutine with a buffered outbound queue. A connection whose queue fills up is closed, so one slow client can't stall the room.
@@ -162,12 +162,13 @@ All messages are JSON with the shape `{ "type": string, ...fields }`. Coordinate
 | `ink.end` | `strokeId` | |
 | `ink.clear` | — | Clears all sticky strokes. |
 | `signal` | `data` | A WebRTC description or ICE candidate. The server passes it through without reading it. |
+| `leave` | — | The **Leave** button. The seat is freed immediately (no 30-second hold) and the server closes the connection with code 1000. |
 
 ### 6.2 Server → client
 
 | type | fields | notes |
 |---|---|---|
-| `welcome` | `you`, `resumeToken`, `polite`, `iceServers`, `snapshot` | Reply to `hello`. `polite` assigns the perfect-negotiation role: the first person in the room is impolite, the second is polite. The role stays with the participant ID across resumes. |
+| `welcome` | `you`, `resumeToken`, `polite`, `iceServers`, `snapshot` | Reply to `hello`. `polite` assigns the perfect-negotiation role: someone joining an empty room is impolite, and someone joining an occupied room takes the opposite role to the person already there (so the two roles always differ, even after seats turn over). The role stays with the participant ID across resumes. |
 | `pong` | `t0`, `serverTime` | |
 | `participant.joined` | `participant {id,name,color,pageSession}` | Sent on a first join and on every resume. |
 | `participant.reconnecting` | `id` | Their connection dropped and their spot is being held. |
@@ -288,7 +289,8 @@ The expected position at server time `now` is `position + (playing ? (now − up
    - When a connection drops, the server marks the person disconnected and holds their spot for **30 seconds**, broadcasting `participant.reconnecting`.
    - If a `hello` comes back with a valid `resumeToken` in that time, the person gets the same participant ID back and the full snapshot.
    - After 30 seconds without one, the server broadcasts `participant.left` and frees the spot.
-5. **Room full:** a third person gets HTTP 409, and the client shows a "This room is full" page.
+5. **Room full:** a third person's `hello` gets `error room_full` and close code 4409, and the client shows a "This room is full" page.
+6. **Stale connection:** a `hello` with a valid `resumeToken` for a participant the server still thinks is connected (for example, a half-open TCP connection after Wi-Fi dropped) takes over the seat. The old connection is closed with code 4001.
 
 ### 9.2 Server validation and limits
 
@@ -361,3 +363,25 @@ The expected position at server time `now` is `position + (playing ? (now − up
 4. WebRTC call plus cam tiles on the stage with drag and resize.
 5. Cursors and ink.
 6. Polish, error states, end-to-end tests, deployment.
+
+## 13. Decisions made during planning
+
+These fill gaps found when the spec was reviewed for implementation. Where they touch an earlier section, that section has been updated too.
+
+**Server**
+- **Stale connections:** a resume with a valid token replaces a connection the server still thinks is alive (section 9.1, step 6). The server also pings every connection every 15 seconds, so a dead connection is noticed promptly and the 30-second grace period starts on time.
+- **Leaving on purpose:** a new `leave` message (section 6.1). If the leaver was the person playback was waiting for, `waitingFor` is cleared and the room stays paused.
+- **Perfect-negotiation roles:** a newcomer takes the role the other person doesn't hold (section 6.2). Default cam positions follow the role: impolite bottom-left, polite bottom-right.
+- **Cam rectangles:** the server doesn't know a camera's aspect ratio. It clamps rectangles while keeping their own width-to-height ratio. The default rectangle assumes a 16:9 camera (`h = w` in stage fractions, because the stage is also 16:9). The client sets `h` from the real aspect ratio when the person resizes. Tiles use `object-fit: cover`.
+- **Holder checks:** `cam.release` from someone who isn't the holder is ignored, just like `cam.move`.
+- **Playback commands:** `seek` keeps `playing` unchanged. `play`, `pause`, `seek`, `stalled` and `ready` are ignored while no video is loaded. A partner disconnecting only auto-pauses if the room was playing.
+- **Ink:** the server overwrites `color` with the sender's participant color and `width` with 0.004, so the client can't change them. Besides the 500-stroke cap, sticky ink is capped at **100,000 points in total**, with the oldest strokes dropped first. This keeps `welcome` small (500 strokes × 2,000 points would be about 15 MB of JSON). The server drops points beyond 2,000 in a single stroke.
+- **Validation details:** `hello.name` is trimmed and must be 1–32 characters. `color` must be `#rrggbb`. IDs and tokens are at most 64 characters. Binary frames get `bad_message`. If the first message isn't a valid `hello`, the server sends `error bad_message` and closes with code 4400. If no `hello` arrives within 10 seconds, the connection is closed.
+- **Close codes:** 1000 left, 4001 replaced by a newer connection, 4400 bad first message, 4404 room not found, 4409 room full.
+- **TURN:** only Cloudflare is implemented (`TURN_PROVIDER=cloudflare`). Credentials are requested with a 12-hour TTL, cached server-wide, and refreshed once half the TTL has passed. If a fetch fails, `welcome` carries STUN only and the server logs a warning.
+- **Embedding:** Go's `embed` can't reach `../web/dist`, so the build copies the frontend into `server/internal/webdist/dist/`.
+
+**Client (for later plans)**
+- **Message rate:** `cam.move` is throttled to about 30 Hz, like cursors. Cursor, cam and ink traffic together then stay under the 100 messages per second limit.
+- **End of video:** when the player reports "ended", or the expected position is past the video's duration, the client doesn't send `playback.stalled` and the drift check clamps to the duration. Otherwise the end of a video would loop through stall, pause and resume.
+- **Reloading:** after a reload, the person goes back through the lobby. Their name and color are filled in, and they press **Rejoin**. The click counts as a user gesture, so the browser allows autoplay with sound and the camera starts again.
