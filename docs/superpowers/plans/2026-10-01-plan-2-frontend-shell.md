@@ -3016,7 +3016,7 @@ describe('Lobby', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npm --prefix web test -- src/app/Lobby.test.tsx`
-Expected: FAIL with `Error: Cannot find module './Lobby'`.
+Expected: FAIL with `Error: Failed to resolve import "./Lobby" from "src/app/Lobby.test.tsx". Does the file exist?` (Vite's wording for a missing import in a `.tsx` test).
 
 - [ ] **Step 3: Write the media views and the lobby**
 
@@ -3364,7 +3364,7 @@ describe('App', () => {
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `npm --prefix web test -- src/app/RoomRoute.test.tsx src/app/App.test.tsx`
-Expected: both files FAIL with `Error: Cannot find module` (`./RoomRoute` and `./App`).
+Expected: both files FAIL with `Error: Failed to resolve import` (`./RoomRoute` and `./App`).
 
 - [ ] **Step 3: Write the stage component**
 
