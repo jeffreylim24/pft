@@ -36,13 +36,17 @@ func Encode(m Message) ([]byte, error) {
 	return out, nil
 }
 
-// DecodeClient parses a message from the browser.
+// DecodeClient parses and validates a message from the browser. Numbers are
+// clamped to their allowed ranges; anything else invalid is an ErrBadMessage.
 func DecodeClient(data []byte) (ClientMsg, error) {
 	m, err := decode(data, clientDecoders)
 	if err != nil {
 		return nil, err
 	}
-	return m.(ClientMsg), nil
+	if err := checkRequired(m.MsgType(), data); err != nil {
+		return nil, err
+	}
+	return normalize(m.(ClientMsg))
 }
 
 // DecodeServer parses a message from the server. The server never needs it;
