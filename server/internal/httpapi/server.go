@@ -33,6 +33,7 @@ func New(cfg Config) http.Handler {
 	s := &Server{reg: cfg.Registry, ice: cfg.ICE, log: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/rooms", s.createRoom)
+	mux.HandleFunc("GET /ws", s.serveWS)
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spa(cfg.Static))
 	return mux
