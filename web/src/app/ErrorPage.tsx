@@ -7,8 +7,16 @@ export type ErrorKind = 'room_full' | 'not_found' | 'replaced' | 'rejected'
 const pages: Record<ErrorKind, { title: string; body: string; action: () => ReactNode }> = {
   room_full: {
     title: 'This room is full',
-    body: 'A room holds two people, and both seats are taken. Start a room of your own instead.',
-    action: () => <CreateRoomButton />,
+    body:
+      'A room holds two people, and both seats are taken. If you were just in this room, your seat is held for 30 seconds after you drop out, so try again in a moment. Or start a room of your own.',
+    action: () => (
+      <div className="actions">
+        <button type="button" onClick={resetSession}>
+          Try again
+        </button>
+        <CreateRoomButton />
+      </div>
+    ),
   },
   not_found: {
     title: 'Room not found',

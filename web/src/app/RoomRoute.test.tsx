@@ -64,6 +64,14 @@ describe('RoomRoute', () => {
     expect(screen.getByRole('heading').textContent).toBe(title)
   })
 
+  it('room full offers Try again, since your own seat may still be held', () => {
+    show({ kind: 'closed', reason: 'room_full' }, false)
+    expect(screen.getByText(/your seat is held for 30 seconds/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Create room' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(screen.getByRole('button', { name: /Join|Rejoin/ })).toBeTruthy()
+  })
+
   it('"Use this tab instead" goes back to the lobby', () => {
     show({ kind: 'closed', reason: 'replaced' })
     fireEvent.click(screen.getByRole('button', { name: 'Use this tab instead' }))
