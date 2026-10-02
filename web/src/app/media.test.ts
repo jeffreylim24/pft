@@ -37,10 +37,31 @@ describe('acquireLocalMedia', () => {
     await expect(acquireLocalMedia({ getUserMedia })).resolves.toMatchObject({ status: 'ready', hasVideo: false })
   })
 
-  it('reports blocked when permission is denied, without asking twice', async () => {
+  it('keeps the mic when only the camera is denied', async () => {
+    const { stream } = fakeStream(['audio'])
+    const getUserMedia = vi.fn((c: MediaStreamConstraints) => (c.video ? Promise.reject(denied) : Promise.resolve(stream)))
+    await expect(acquireLocalMedia({ getUserMedia })).resolves.toEqual({
+      status: 'ready',
+      stream,
+      hasVideo: false,
+      hasAudio: true,
+    })
+  })
+
+  it('keeps the camera when there is no mic', async () => {
+    const { stream } = fakeStream(['video'])
+    const getUserMedia = vi.fn((c: MediaStreamConstraints) => (c.audio ? Promise.reject(noCamera) : Promise.resolve(stream)))
+    await expect(acquireLocalMedia({ getUserMedia })).resolves.toEqual({
+      status: 'ready',
+      stream,
+      hasVideo: true,
+      hasAudio: false,
+    })
+  })
+
+  it('reports blocked when camera and mic are both denied', async () => {
     const getUserMedia = vi.fn().mockRejectedValue(denied)
     await expect(acquireLocalMedia({ getUserMedia })).resolves.toEqual({ status: 'blocked' })
-    expect(getUserMedia).toHaveBeenCalledTimes(1)
   })
 
   it('reports unavailable without getUserMedia or without devices', async () => {

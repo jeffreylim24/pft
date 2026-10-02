@@ -30,17 +30,18 @@ export function releaseLocalMedia(): void {
 
 async function request(devices: Devices): Promise<LocalMedia> {
   if (!devices?.getUserMedia) return { status: 'unavailable' }
-  try {
-    return ready(await devices.getUserMedia({ video: true, audio }))
-  } catch (err) {
-    if (isDenied(err)) return { status: 'blocked' }
+  // Both together first (one prompt), then each alone: a camera that's
+  // denied, missing or busy mustn't cost the mic, and a missing mic mustn't
+  // cost the camera.
+  let denied = false
+  for (const constraints of [{ video: true, audio }, { audio }, { video: true }]) {
+    try {
+      return ready(await devices.getUserMedia(constraints))
+    } catch (err) {
+      denied ||= isDenied(err)
+    }
   }
-  // No camera, or another app has it: the mic alone still makes a call.
-  try {
-    return ready(await devices.getUserMedia({ audio }))
-  } catch (err) {
-    return isDenied(err) ? { status: 'blocked' } : { status: 'unavailable' }
-  }
+  return denied ? { status: 'blocked' } : { status: 'unavailable' }
 }
 
 function ready(stream: MediaStream): LocalMedia {
