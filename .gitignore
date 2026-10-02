@@ -1,0 +1,3 @@
+# The built frontend is copied here for go:embed; only the placeholder is tracked.
+/server/internal/webdist/dist/*
+!/server/internal/webdist/dist/.gitkeep
