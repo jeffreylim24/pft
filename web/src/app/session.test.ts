@@ -80,6 +80,15 @@ describe('session', () => {
     expect(storage.getItem(`popcorn.resume.${roomId}`)).toBe('tok-1')
   })
 
+  it('forgets the token when the room no longer exists', () => {
+    storage.setItem(`popcorn.resume.${roomId}`, 'tok-old')
+    const sock = join()
+    sock.open()
+    sock.serverClose(4404)
+    expect(useAppStore.getState().status).toEqual({ kind: 'closed', reason: 'not_found' })
+    expect(storage.getItem(`popcorn.resume.${roomId}`)).toBeNull()
+  })
+
   it('ignores a replaced client once a new one has started', () => {
     const first = join()
     first.open()

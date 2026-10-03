@@ -49,6 +49,8 @@ export function joinRoom(roomId: string, profile: Profile, deps: SessionDeps = {
   active = { client, roomId, storage }
   useAppStore.setState({ roomId, status: client.status, room: null })
   client.onStatus((status) => {
+    // An expired room's token would otherwise say "Welcome back" forever.
+    if (status.kind === 'closed' && status.reason === 'not_found') storage.removeItem(tokenKey(roomId))
     if (active?.client === client) useAppStore.setState({ status })
   })
   client.subscribe((msg) => {
