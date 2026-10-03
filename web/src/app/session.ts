@@ -15,16 +15,20 @@ const pageSession = randomId()
 
 export interface SessionDeps {
   page?: { protocol: string; host: string }
-  storage?: StorageLike // where resume tokens live; sessionStorage by default
+  storage?: StorageLike // where resume tokens live; localStorage by default
   createSocket?: (url: string) => SocketLike
 }
 
 let active: { client: RoomClient; roomId: string; storage: StorageLike } | null = null
 
+// Tokens are kept in localStorage, so every tab in this browser is the same
+// person: a reload, a duplicated tab (Safari doesn't copy sessionStorage),
+// or the link reopened while the seat is held. A hello with the token takes
+// over the seat, and the server closes the old tab with 4001.
 const tokenKey = (roomId: string) => `popcorn.resume.${roomId}`
 
-/** The token from an earlier welcome in this tab (it survives a reload). */
-export function savedResumeToken(roomId: string, storage = browserStorage('sessionStorage')): string | null {
+/** The token from an earlier welcome in any tab of this browser. */
+export function savedResumeToken(roomId: string, storage = browserStorage('localStorage')): string | null {
   return storage.getItem(tokenKey(roomId))
 }
 
@@ -34,7 +38,7 @@ export function getRoomClient(): RoomClient | null {
 
 export function joinRoom(roomId: string, profile: Profile, deps: SessionDeps = {}): void {
   active?.client.leave()
-  const storage = deps.storage ?? browserStorage('sessionStorage')
+  const storage = deps.storage ?? browserStorage('localStorage')
   const client = new RoomClient({
     url: roomSocketUrl(deps.page ?? location, roomId),
     hello: { name: profile.name.trim(), color: profile.color, pageSession },
@@ -45,6 +49,8 @@ export function joinRoom(roomId: string, profile: Profile, deps: SessionDeps = {
   active = { client, roomId, storage }
   useAppStore.setState({ roomId, status: client.status, room: null })
   client.onStatus((status) => {
+    // An expired room's token would otherwise say "Welcome back" forever.
+    if (status.kind === 'closed' && status.reason === 'not_found') storage.removeItem(tokenKey(roomId))
     if (active?.client === client) useAppStore.setState({ status })
   })
   client.subscribe((msg) => {

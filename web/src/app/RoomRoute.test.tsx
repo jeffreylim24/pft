@@ -19,6 +19,7 @@ function show(status: SessionStatus, withRoom = true) {
 afterEach(() => {
   cleanup()
   useAppStore.setState(initialAppState)
+  localStorage.clear()
 })
 
 describe('RoomRoute', () => {
@@ -72,10 +73,11 @@ describe('RoomRoute', () => {
     expect(screen.getByRole('button', { name: /Join|Rejoin/ })).toBeTruthy()
   })
 
-  it('"Use this tab instead" goes back to the lobby', () => {
+  it('"Use this tab instead" goes back to the lobby, offering Rejoin', () => {
+    localStorage.setItem(`popcorn.resume.${roomId}`, 'tok-1')
     show({ kind: 'closed', reason: 'replaced' })
     fireEvent.click(screen.getByRole('button', { name: 'Use this tab instead' }))
-    expect(screen.getByRole('button', { name: /Join|Rejoin/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Rejoin' })).toBeTruthy()
   })
 
   it('treats a session for another room as not joined', () => {

@@ -15,7 +15,6 @@ const nameInput = () => screen.getByLabelText<HTMLInputElement>('Your name')
 
 beforeEach(() => {
   localStorage.clear()
-  sessionStorage.clear()
   vi.mocked(joinRoom).mockClear()
 })
 
@@ -48,9 +47,9 @@ describe('Lobby', () => {
     expect(JSON.parse(localStorage.getItem('popcorn.profile')!)).toEqual({ name: 'Kim', color: PALETTE[2] })
   })
 
-  it('offers Rejoin after a reload in the same tab', () => {
+  it('offers Rejoin when any tab in this browser was in the room', () => {
     localStorage.setItem('popcorn.profile', JSON.stringify({ name: 'Sam', color: PALETTE[0] }))
-    sessionStorage.setItem(`popcorn.resume.${roomId}`, 'tok-1')
+    localStorage.setItem(`popcorn.resume.${roomId}`, 'tok-1')
     render(<Lobby roomId={roomId} joining={false} />)
     expect(screen.getByRole('heading').textContent).toBe('Welcome back')
     fireEvent.click(screen.getByRole('button', { name: 'Rejoin' }))
