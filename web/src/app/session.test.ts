@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeSocket, welcome } from '../test/fakeSocket'
 import { getRoomClient, joinRoom, leaveRoom, resetSession, syncSessionWithRoute } from './session'
@@ -99,5 +100,46 @@ describe('session', () => {
     syncSessionWithRoute({ page: 'landing' })
     expect(sock.sent.at(-1)).toEqual({ type: 'leave' })
     expect(useAppStore.getState().roomId).toBeNull()
+  })
+})
+
+// By default the token lives in localStorage, so any tab in this browser
+// (a duplicate, a new tab, the link reopened) counts as the same person.
+describe('session with browser storage', () => {
+  const key = `popcorn.resume.${roomId}`
+  const joinDefault = () => {
+    joinRoom(roomId, profile, {
+      page: { protocol: 'http:', host: 'localhost:5173' },
+      createSocket: (url) => new FakeSocket(url),
+    })
+    return FakeSocket.latest()
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+
+  it('keeps the token where other tabs can read it', () => {
+    const sock = joinDefault()
+    sock.open()
+    sock.receive(welcome('me', 'tok-1'))
+    expect(localStorage.getItem(key)).toBe('tok-1')
+  })
+
+  it('resumes in a fresh tab with the token another tab saved', () => {
+    localStorage.setItem(key, 'tok-other-tab')
+    const sock = joinDefault()
+    sock.open()
+    expect(sock.sent[0]).toMatchObject({ type: 'hello', resumeToken: 'tok-other-tab' })
+  })
+
+  it('Leave forgets the token for every tab', () => {
+    const sock = joinDefault()
+    sock.open()
+    sock.receive(welcome('me', 'tok-1'))
+    expect(localStorage.getItem(key)).toBe('tok-1')
+    leaveRoom()
+    expect(localStorage.getItem(key)).toBeNull()
   })
 })

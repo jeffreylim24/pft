@@ -284,7 +284,7 @@ The expected position at server time `now` is `position + (playing ? (now − up
    - Shows a camera and mic preview, with the permission prompt.
    - Shows a "Headphones recommended" tip.
    - Has a **Join** button.
-3. **Join:** the client opens the WebSocket, sends `hello`, and receives `welcome`. It stores the `resumeToken` in `sessionStorage`.
+3. **Join:** the client opens the WebSocket, sends `hello`, and receives `welcome`. It stores the `resumeToken` in `localStorage`, one per room, so every tab in the same browser resumes as the same person (section 13).
 4. **Reconnecting:**
    - When a connection drops, the server marks the person disconnected and holds their spot for **30 seconds**, broadcasting `participant.reconnecting`.
    - If a `hello` comes back with a valid `resumeToken` in that time, the person gets the same participant ID back and the full snapshot.
@@ -388,5 +388,10 @@ These fill gaps found when the spec was reviewed for implementation. Where they 
 - **Liveness (plan 2):** besides the clock rounds, the client sends a heartbeat `ping` every 10 seconds. If nothing arrives within 5 seconds of a ping, or no `welcome` arrives within 10 seconds of opening a socket, it drops the socket and reconnects. Without this a half-open socket could outlast the 30-second grace period.
 - **Leaving the page (plan 2):** going from a room back to the landing page inside the app (the **Leave** button, or Back when the previous page is the app's own) sends `leave` and turns the camera off. Any other way of leaving the page (closing the tab, typing a URL, Back out of the site) holds the seat for the 30-second grace period, like a dropped connection. A `pagehide` handler can't send `leave`, because a reload must keep the seat.
 - **Another tab took over (plan 2):** close code 4001 shows "You're in this room in another tab" with **Use this tab instead**, which goes back to the lobby; **Rejoin** then takes the seat back.
+- **Resume token in `localStorage` (plan 2 fix):** the token is kept per room in `localStorage` (`popcorn.resume.<roomId>`), not `sessionStorage`, so every tab in one browser counts as the same person. With `sessionStorage`, two things went wrong:
+  - Safari's Duplicate Tab doesn't copy `sessionStorage` (Chrome and Edge do), so a duplicated tab joined as a new person. It took the partner's free seat, or got "room full".
+  - Closing the tab and reopening the link within 30 seconds got "room full", because a new tab never had the token.
+
+  Now a duplicated tab, a new tab or a reopened link shows "Welcome back" with **Rejoin**. Rejoining takes over the seat, and the old tab shows "You're in this room in another tab". **Leave** still removes the token, and the room-full page keeps **Try again** for a private window that was closed and reopened. The trade-off: two people can't share one browser profile in a room. A normal window and a private window are still two people, but two Chrome Incognito windows share storage and count as one. Tokens for expired rooms are never cleaned up. They're harmless: the lobby says "Welcome back", and **Rejoin** then shows "Room not found".
 - **Unknown rooms (plan 2):** there's no room-lookup endpoint, so a stale link shows the lobby first and "Room not found" after **Join**.
 - **Test tooling (plan 2):** Vitest 4 and jsdom 29, because Vitest 5 and jsdom 30 don't support Node 25. Vitest workers run with `--no-experimental-webstorage`, because Node 25's own `localStorage` hides jsdom's.

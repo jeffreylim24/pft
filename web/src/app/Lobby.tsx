@@ -9,7 +9,7 @@ import { browserStorage } from './storage'
 export function Lobby({ roomId, joining }: { roomId: string; joining: boolean }) {
   const [profile, setProfile] = useState(() => loadProfile(browserStorage('localStorage')))
   const [media, retryMedia] = useLocalMedia()
-  // A token means this tab was in the room before a reload.
+  // A token means this browser was in the room: a reload, or another tab.
   const [rejoining] = useState(() => savedResumeToken(roomId) !== null)
   const canJoin = isValidName(profile.name) && !joining
 
