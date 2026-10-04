@@ -122,6 +122,19 @@ describe('Toolbar playback controls', () => {
     expect(sock.sentOfType('playback.seek')).toEqual([])
   })
 
+  it('a new video mid-drag drops the scrub, so the time never sticks', () => {
+    act(() => usePlayerStore.setState({ duration: 300 }))
+    playback({ position: 10 })
+    const seek = screen.getByRole('slider', { name: 'Seek' })
+    fireEvent.input(seek, { target: { value: '150' } })
+    playback({ videoId: 'aaaaaaaaaaa', position: 0 })
+    act(() => usePlayerStore.setState({ duration: 0 })) // what PlaybackSync does for a new video
+    act(() => usePlayerStore.setState({ duration: 200 }))
+    expect(screen.getByText('0:00 / 3:20')).toBeTruthy()
+    fireEvent.change(seek)
+    expect(sock.sentOfType('playback.seek')).toEqual([])
+  })
+
   it("shows the room's time, ticking while playing", async () => {
     act(() => usePlayerStore.setState({ duration: 600 }))
     playback({ playing: true, position: 61, updatedAt: NOW })

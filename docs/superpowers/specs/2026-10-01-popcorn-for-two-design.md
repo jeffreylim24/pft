@@ -419,7 +419,7 @@ These fill gaps found when the spec was reviewed for implementation. Where they 
 - **A player that never loads:** if the YouTube player can't be created, or doesn't become ready within 15 s (YouTube's second script blocked, or the iframe replaced by a privacy extension), the client shows the "didn't load" message, the same as a failed IFrame API script. The error rule (no stall reports, and `ready` at once while the room waits) keeps the room from being held. If the player does become ready later, the first state it reports (its queued cue reports one) clears the message, so stall reports resume. YouTube's own error codes stay until a new video loads.
 - **Controls:**
   - Play and Pause send the room's expected position, clamped to the duration. Play at or past the end sends 0.
-  - The seek bar shows the room's time and sends one `playback.seek` on the input's native `change` event, which fires once when a drag ends and once per key step. Dragging only moves the bar. If the connection drops mid-drag, the drag is dropped and never sent.
+  - The seek bar shows the room's time and sends one `playback.seek` on the input's native `change` event, which fires once when a drag ends and once per key step. Dragging only moves the bar. If the seek bar becomes disabled mid-drag (the connection drops, or a new video loads), the drag is dropped and never sent.
   - The time display uses `serverNow()`, not the local player.
   - The volume slider sets this browser's YouTube volume only, and isn't saved.
 - **Notices:**

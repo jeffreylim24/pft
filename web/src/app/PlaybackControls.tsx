@@ -79,6 +79,7 @@ export function PlaybackControls({ playback, enabled }: { playback: PlaybackStat
   const atEnd = duration > 0 && expected >= duration
   const playing = playback.playing && !atEnd
   const position = clampToDuration(expected, duration)
+  const seekDisabled = !enabled || !hasVideo || duration === 0
 
   function togglePlay() {
     const now = expectedPosition(playback, serverNow())
@@ -107,10 +108,11 @@ export function PlaybackControls({ playback, enabled }: { playback: PlaybackStat
     return () => input.removeEventListener('change', commit)
   }, [])
 
-  // A drop mid-drag forgets the scrub, so it can't be sent later.
+  // A disabled seek bar fires no change event on release, so a scrub would
+  // stick. A drop mid-drag, or a new video, forgets it instead.
   useEffect(() => {
-    if (!enabled) scrubTo(null)
-  }, [enabled])
+    if (seekDisabled) scrubTo(null)
+  }, [seekDisabled])
 
   return (
     <div className="tool-group">
@@ -126,7 +128,7 @@ export function PlaybackControls({ playback, enabled }: { playback: PlaybackStat
         max={duration}
         step={0.1}
         value={scrub ?? position}
-        disabled={!enabled || !hasVideo || duration === 0}
+        disabled={seekDisabled}
         onChange={(e) => scrubTo(Number(e.target.value))}
       />
       <span className="time">{`${formatTime(scrub ?? position)} / ${formatTime(duration)}`}</span>
