@@ -30,9 +30,9 @@ function apply(playback: PlaybackState, connected = true) {
   sync.update({ playback, you: 'me', connected })
 }
 
-function start(opts: FakePlayerOptions = {}) {
+function start(opts: FakePlayerOptions = {}, Kind: typeof FakePlayer = FakePlayer) {
   sync?.destroy()
-  player = new FakePlayer({ videoDuration: 600, ...opts })
+  player = new Kind({ videoDuration: 600, ...opts })
   sent = []
   sync = new PlaybackSync({
     player,
@@ -46,6 +46,26 @@ function start(opts: FakePlayerOptions = {}) {
 
 /** A player whose time reads ahead while it says Playing, like YouTube's widget. */
 const ESTIMATING = { estimateAhead: { updateMs: 500 } }
+
+/**
+ * Like YouTube's widget, seekTo is only a message to the iframe: until its
+ * next report, about 300 ms later, the reading still comes from before the seek.
+ */
+class LaggingPlayer extends FakePlayer {
+  private stale: { from: number; at: number } | null = null
+
+  override seek(seconds: number): void {
+    const from = this.getCurrentTime()
+    super.seek(seconds)
+    this.stale = { from, at: Date.now() }
+  }
+
+  override getCurrentTime(): number {
+    const stale = this.stale
+    if (stale && Date.now() - stale.at < 300) return stale.from
+    return super.getCurrentTime()
+  }
+}
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -168,13 +188,16 @@ describe('PlaybackSync: following the room', () => {
 describe('PlaybackSync: stalls and getting ready', () => {
   const types = () => sent.map((m) => m.type)
 
-  const players: Array<[string, FakePlayerOptions]> = [
-    ['player', {}],
-    ['player that estimates ahead', ESTIMATING],
+  const players: Array<[string, FakePlayerOptions, typeof FakePlayer]> = [
+    ['player', {}, FakePlayer],
+    ['player that estimates ahead', ESTIMATING, FakePlayer],
   ]
+  // Recovery's own seek happens after the ad, and only delays ready, so the
+  // lagging player is for the stall and seek tests.
+  const seekingPlayers = [...players, ['player that estimates ahead and reads late after a seek', ESTIMATING, LaggingPlayer] as const]
 
-  it.each(players)('reports a stall once when the %s stops moving for over 2 s', (_, opts) => {
-    start(opts)
+  it.each(seekingPlayers)('reports a stall once when the %s stops moving for over 2 s', (_, opts, Kind) => {
+    start(opts, Kind)
     apply(state({ playing: true }))
     vi.advanceTimersByTime(1_000)
     player.stall()
@@ -208,8 +231,8 @@ describe('PlaybackSync: stalls and getting ready', () => {
     expect(types()).toEqual([])
   })
 
-  it.each(players)('after its own stall (%s): keeps playing until the video moves, then pauses at the room position and sends ready', (_, opts) => {
-    start(opts)
+  it.each(players)('after its own stall (%s): keeps playing until the video moves, then pauses at the room position and sends ready', (_, opts, Kind) => {
+    start(opts, Kind)
     apply(state({ playing: true }))
     vi.advanceTimersByTime(1_000)
     player.stall() // an ad starts
@@ -242,14 +265,24 @@ describe('PlaybackSync: stalls and getting ready', () => {
     expect(types()).toEqual([])
   })
 
-  it.each(players)('after a reload (%s), a snapshot waiting for me: loads, plays until the video moves, pauses at the position, sends ready', (_, opts) => {
-    start(opts)
+  it.each(players)('after a reload (%s), a snapshot waiting for me: loads, plays until the video moves, pauses at the position, sends ready', (_, opts, Kind) => {
+    start(opts, Kind)
     apply(state({ position: 120, waitingFor: 'me', autoResume: true }))
     vi.advanceTimersByTime(1_500)
     expect(types()).toEqual([])
     vi.advanceTimersByTime(500)
     expect(player.calls).toEqual([`load:${VIDEO}@120`, 'play', 'pause', 'seek:120'])
     expect(types()).toEqual(['playback.ready'])
+  })
+
+  it.each(seekingPlayers)('no stall after a seek back while playing, with a %s', (_, opts, Kind) => {
+    start(opts, Kind)
+    apply(state({ playing: true, position: 300 }))
+    vi.advanceTimersByTime(3_000)
+    apply(state({ playing: true, position: 240 })) // someone seeks back a minute
+    vi.advanceTimersByTime(5_000)
+    expect(types()).toEqual([])
+    expect(player.getCurrentTime()).toBe(245)
   })
 
   it("a jump in the player's time isn't progress, so a stuck player still stalls", () => {

@@ -28,6 +28,12 @@ export const RECOVERY_PROGRESS_S = 1.5
 const MOVED_S = 0.05
 /** A step forward this much more than the time that passed is a jump, not playback. */
 const JUMP_S = 2
+/**
+ * A reading this far below the high-water mark means the video went back,
+ * not that the estimate snapped back: YouTube's reading runs at most 1 s ahead.
+ * It stays under STALL_MS, so a smaller step back is passed again in time.
+ */
+const DROP_S = 1.5
 
 export interface SyncInput {
   playback: PlaybackState
@@ -250,12 +256,15 @@ export class PlaybackSync {
   // time past the high-water mark counts, so a reading that runs ahead and
   // snaps back counts once. A step can't count for more than the time that
   // passed, and a much bigger one (a cued start arriving late, say) is a
-  // jump: the mark moves without counting it.
+  // jump: the mark moves without counting it. The mark also comes down,
+  // without counting, when the reading falls well below it. YouTube's
+  // seekTo is only a message to its iframe, so the reading right after our
+  // own seek is still the old time, and markProgress can set the mark there.
   private progressTo(time: number, now: number): number {
     const elapsed = (now - this.sampledAt) / 1000
     this.sampledAt = now
     const step = time - this.highWater
-    if (step > elapsed + JUMP_S) {
+    if (step > elapsed + JUMP_S || step < -DROP_S) {
       this.highWater = time
       return 0
     }
