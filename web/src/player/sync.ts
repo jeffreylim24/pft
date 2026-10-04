@@ -107,9 +107,13 @@ export class PlaybackSync {
     const target = this.target()
     this.markProgress()
     if (playback.waitingFor === you && playback.autoResume) {
-      // Set before play(), so the Playing event that follows isn't undone.
-      this.recovery = 'awaitingProgress'
-      this.player.play()
+      if (this.ended()) {
+        this.startSettling() // play() on an ended video would start it over (spec 13)
+      } else {
+        // Set before play(), so the Playing event that follows isn't undone.
+        this.recovery = 'awaitingProgress'
+        this.player.play()
+      }
     } else if (playback.playing) {
       if (!justLoaded && Math.abs(this.player.getCurrentTime() - target) > DRIFT_LIMIT_S) this.seek(target)
       // play() after the end would start the video over (spec 13).
@@ -146,16 +150,15 @@ export class PlaybackSync {
   // Spec 7.3, recovery: wait until the player can play again, pause and
   // seek to the room position, then say ready.
   private recover(time: number, moved: boolean): void {
+    // A player that can't play must not hold the room.
+    if (usePlayerStore.getState().error !== null) {
+      if (this.recovery !== 'readySent' && this.send({ type: 'playback.ready' })) this.recovery = 'readySent'
+      return
+    }
     const state = this.player.getState()
     if (this.recovery === 'awaitingProgress') {
       this.progressTicks = moved && state === PlayerState.Playing ? this.progressTicks + 1 : 0
-      if (state === PlayerState.Ended) {
-        this.recovery = 'settling' // the room is waiting past the end; nothing to play
-      } else if (this.progressTicks >= PROGRESS_TICKS) {
-        this.player.pause()
-        this.seek(this.target())
-        this.recovery = 'settling'
-      }
+      if (state === PlayerState.Ended || this.progressTicks >= PROGRESS_TICKS) this.startSettling()
       return
     }
     if (this.recovery === 'settling') {
@@ -164,6 +167,18 @@ export class PlaybackSync {
         this.recovery = 'readySent'
       }
     }
+  }
+
+  // Pause and move to the room position. A seek from Ended starts YouTube
+  // playing, but playerStateChanged pauses it again, because wantsPlaying is
+  // false while settling.
+  private startSettling(): void {
+    this.recovery = 'settling'
+    this.player.pause()
+    const target = this.target()
+    // An ended player already at the room position stays ended; seeking would restart it.
+    const stay = this.player.getState() === PlayerState.Ended && Math.abs(this.player.getCurrentTime() - target) <= READY_TOLERANCE_S
+    if (!stay) this.seek(target)
   }
 
   private checkDrift(): void {

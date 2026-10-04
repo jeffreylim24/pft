@@ -262,4 +262,36 @@ describe('PlaybackSync: stalls and getting ready', () => {
     expect(player.calls.slice(-2)).toEqual(['pause', 'seek:2.25'])
     expect(types()).toEqual(['playback.stalled', 'playback.ready'])
   })
+
+  it('after the end, a reconnect waiting for me sends ready without restarting the video', () => {
+    const playing = state({ playing: true, position: 595 })
+    apply(playing)
+    vi.advanceTimersByTime(10_000)
+    expect(player.getState()).toBe(PlayerState.Ended)
+    apply(playing, false)
+    apply(state({ position: 605, waitingFor: 'me', autoResume: true }))
+    vi.advanceTimersByTime(1_000)
+    expect(player.calls.filter((c) => c === 'play')).toEqual(['play']) // only the first one
+    expect(player.getState()).toBe(PlayerState.Ended)
+    expect(types()).toEqual(['playback.ready'])
+  })
+
+  it('recovers when the player reaches the end before the room position', () => {
+    const playing = state({ playing: true, position: 599.1 })
+    apply(playing)
+    vi.advanceTimersByTime(500) // the player is at 599.6
+    apply(playing, false)
+    apply(state({ position: 599, waitingFor: 'me', autoResume: true })) // resumes at 599.6 and ends within half a second
+    vi.advanceTimersByTime(1_000)
+    expect([player.getState(), player.getCurrentTime()]).toEqual([PlayerState.Paused, 599])
+    expect(types()).toEqual(['playback.ready'])
+  })
+
+  it("a player error during recovery sends ready, so the partner isn't held", () => {
+    apply(state({ position: 30, waitingFor: 'me', autoResume: true }))
+    player.stall()
+    player.fail(150)
+    vi.advanceTimersByTime(500)
+    expect(types()).toEqual(['playback.ready'])
+  })
 })
