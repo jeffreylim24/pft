@@ -143,3 +143,123 @@ describe('PlaybackSync: following the room', () => {
     expect(player.volume).toBe(100)
   })
 })
+
+describe('PlaybackSync: stalls and getting ready', () => {
+  const types = () => sent.map((m) => m.type)
+
+  it('reports a stall once when the player stops moving for over 2 s', () => {
+    apply(state({ playing: true }))
+    vi.advanceTimersByTime(1_000)
+    player.stall()
+    vi.advanceTimersByTime(2_000)
+    expect(types()).toEqual([])
+    vi.advanceTimersByTime(500)
+    expect(types()).toEqual(['playback.stalled'])
+    vi.advanceTimersByTime(5_000)
+    expect(types()).toEqual(['playback.stalled'])
+  })
+
+  it("doesn't report a stall while the room is paused", () => {
+    apply(state({ position: 10 }))
+    vi.advanceTimersByTime(5_000)
+    expect(types()).toEqual([])
+  })
+
+  it("doesn't report a stall after a player error", () => {
+    apply(state({ playing: true }))
+    player.fail(150)
+    player.stall()
+    vi.advanceTimersByTime(5_000)
+    expect(usePlayerStore.getState().error).toBe(150)
+    expect(types()).toEqual([])
+  })
+
+  it("doesn't report a stall at the end of the video", () => {
+    apply(state({ playing: true, position: 595 }))
+    vi.advanceTimersByTime(10_000)
+    expect(player.getState()).toBe(PlayerState.Ended)
+    expect(types()).toEqual([])
+  })
+
+  it('after its own stall: keeps playing until the video moves, then pauses at the room position and sends ready', () => {
+    apply(state({ playing: true }))
+    vi.advanceTimersByTime(1_000)
+    player.stall() // an ad starts
+    vi.advanceTimersByTime(2_500)
+    expect(types()).toEqual(['playback.stalled'])
+
+    apply(state({ position: 3.25, waitingFor: 'me', autoResume: true })) // the server pauses the room for us
+    vi.advanceTimersByTime(3_000)
+    expect(player.getState()).toBe(PlayerState.Playing) // still in the ad, not paused
+    expect(types()).toEqual(['playback.stalled'])
+
+    player.unstall() // the ad ends and the video moves again
+    vi.advanceTimersByTime(1_000)
+    expect(player.calls.slice(-2)).toEqual(['pause', 'seek:3.25'])
+    expect([player.getState(), player.getCurrentTime()]).toEqual([PlayerState.Paused, 3.25])
+    expect(types()).toEqual(['playback.stalled', 'playback.ready'])
+
+    apply(state({ playing: true, position: 3.25 })) // the server resumes
+    expect(player.getState()).toBe(PlayerState.Playing)
+  })
+
+  it('waiting for the partner: pauses at the room position and sends nothing', () => {
+    apply(state({ playing: true }))
+    vi.advanceTimersByTime(3_000)
+    apply(state({ position: 2.5, waitingFor: 'p2', autoResume: true }))
+    expect(player.calls.slice(-2)).toEqual(['pause', 'seek:2.5'])
+    vi.advanceTimersByTime(5_000)
+    expect(types()).toEqual([])
+  })
+
+  it('after a reload, a snapshot waiting for me: loads, plays until the video moves, pauses at the position, sends ready', () => {
+    apply(state({ position: 120, waitingFor: 'me', autoResume: true }))
+    vi.advanceTimersByTime(1_000)
+    expect(player.calls).toEqual([`load:${VIDEO}@120`, 'play', 'pause', 'seek:120'])
+    expect(types()).toEqual(['playback.ready'])
+  })
+
+  it('recovers when the room is waiting past the end of the video', () => {
+    apply(state({ position: 650, waitingFor: 'me', autoResume: true }))
+    vi.advanceTimersByTime(1_000)
+    expect(player.getState()).toBe(PlayerState.Ended)
+    expect(types()).toEqual(['playback.ready'])
+  })
+
+  it('sends nothing while disconnected, and recovers after reconnecting', () => {
+    const waiting = state({ position: 30, waitingFor: 'me', autoResume: true })
+    apply(waiting)
+    apply(waiting, false)
+    vi.advanceTimersByTime(3_000)
+    expect(types()).toEqual([])
+    apply({ ...waiting }, true) // the welcome after reconnecting carries the same state
+    vi.advanceTimersByTime(1_000)
+    expect(player.calls.slice(-2)).toEqual(['pause', 'seek:30'])
+    expect(types()).toEqual(['playback.ready'])
+  })
+
+  it('reports player errors, and clears them when a new video loads', () => {
+    apply(state())
+    player.fail(150)
+    expect(usePlayerStore.getState().error).toBe(150)
+    apply(state({ videoId: 'aaaaaaaaaaa' }))
+    expect(usePlayerStore.getState().error).toBeNull()
+    expect(player.calls.at(-2)).toBe('load:aaaaaaaaaaa@0')
+  })
+
+  it('blocked autoplay: flags it, and recovers once a click starts the video', () => {
+    player.blockAutoplay()
+    apply(state({ playing: true }))
+    expect(usePlayerStore.getState().autoplayBlocked).toBe(true)
+    vi.advanceTimersByTime(2_500)
+    expect(types()).toEqual(['playback.stalled']) // the room waits for us
+
+    apply(state({ position: 2.25, waitingFor: 'me', autoResume: true }))
+    player.blockAutoplay(false)
+    player.play() // the person clicks Start video
+    expect(usePlayerStore.getState().autoplayBlocked).toBe(false)
+    vi.advanceTimersByTime(1_000)
+    expect(player.calls.slice(-2)).toEqual(['pause', 'seek:2.25'])
+    expect(types()).toEqual(['playback.stalled', 'playback.ready'])
+  })
+})
