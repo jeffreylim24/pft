@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientMessage, PlaybackState } from '../protocol/schemas'
 import { FakePlayer, type FakePlayerOptions } from './fakePlayer'
-import { PlayerState } from './player'
+import { API_LOAD_FAILED, PlayerState } from './player'
 import { initialPlayerFacts, setMovieVolume, usePlayerStore } from './store'
 import { PlaybackSync } from './sync'
 
@@ -339,6 +339,24 @@ describe('PlaybackSync: stalls and getting ready', () => {
     apply(state({ videoId: 'aaaaaaaaaaa' }))
     expect(usePlayerStore.getState().error).toBeNull()
     expect(player.calls.at(-2)).toBe('load:aaaaaaaaaaa@0')
+  })
+
+  it("a player that becomes ready after its load timeout clears the \"didn't load\" error", () => {
+    apply(state({ playing: true }))
+    player.fail(API_LOAD_FAILED) // the ready timeout fired
+    expect(usePlayerStore.getState().error).toBe(API_LOAD_FAILED)
+    player.pause() // onReady came late, and the player reports a state
+    expect(usePlayerStore.getState().error).toBeNull()
+    player.stall()
+    vi.advanceTimersByTime(2_500)
+    expect(types()).toEqual(['playback.stalled']) // stall reports work again
+  })
+
+  it("a state change doesn't clear YouTube's own errors", () => {
+    apply(state({ playing: true }))
+    player.fail(150)
+    player.pause()
+    expect(usePlayerStore.getState().error).toBe(150)
   })
 
   it('blocked autoplay: flags it, and recovers once a click starts the video', () => {

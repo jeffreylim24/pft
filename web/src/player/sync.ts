@@ -3,7 +3,7 @@
 // both browsers act on the same thing. It also corrects drift, reports
 // stalls, and gets the player ready when the room is waiting for us.
 import type { ClientMessage, PlaybackState } from '../protocol/schemas'
-import { PlayerState, type Player, type PlayerStateValue } from './player'
+import { API_LOAD_FAILED, PlayerState, type Player, type PlayerStateValue } from './player'
 import { usePlayerStore } from './store'
 import { clampToDuration, DRIFT_LIMIT_S, driftTarget, expectedPosition } from './timing'
 
@@ -217,6 +217,9 @@ export class PlaybackSync {
   // doesn't want playback.
   private playerStateChanged(state: PlayerStateValue): void {
     if (state === PlayerState.Playing) usePlayerStore.setState({ autoplayBlocked: false })
+    // A player that reports a state has loaded after all, even if it was
+    // ready only after its timeout. Its first command (the cue) reports one.
+    if (usePlayerStore.getState().error === API_LOAD_FAILED) usePlayerStore.setState({ error: null })
     const input = this.input
     if (!input || input.playback.videoId === null) return
     const wantsPlaying = input.connected && (input.playback.playing || this.recovery === 'awaitingProgress')
