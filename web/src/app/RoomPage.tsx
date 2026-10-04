@@ -1,5 +1,8 @@
 import { useState } from 'react'
+import { playerErrorMessage } from '../player/player'
+import { usePlayerStore } from '../player/store'
 import { Stage } from '../stage/Stage'
+import { PlayerLayer } from './PlayerLayer'
 import type { RoomState } from './roomState'
 import { useAppStore } from './store'
 import { Toolbar } from './Toolbar'
@@ -11,11 +14,17 @@ export function RoomPage() {
   return (
     <div className="room">
       <Stage>
-        <div className="stage-empty">
-          <span aria-hidden="true">🍿</span>
-          <p>No video loaded</p>
+        <PlayerLayer />
+        {room.playback.videoId === null && (
+          <div className="stage-empty">
+            <span aria-hidden="true">🍿</span>
+            <p>No video loaded</p>
+          </div>
+        )}
+        <div className="notices">
+          <PartnerNotice room={room} />
+          <PlaybackNotice room={room} />
         </div>
-        <PartnerNotice room={room} />
       </Stage>
       {status.kind === 'reconnecting' && (
         <div className="banner" role="status">
@@ -45,6 +54,33 @@ function PartnerNotice({ room }: { room: RoomState }) {
     )
   }
   return null
+}
+
+function PlaybackNotice({ room }: { room: RoomState }) {
+  const error = usePlayerStore((s) => s.error)
+  const { waitingFor } = room.playback
+  if (error !== null) {
+    return (
+      <div className="notice" role="alert">
+        <p>{playerErrorMessage(error)}</p>
+      </div>
+    )
+  }
+  if (waitingFor === null) return null
+  if (waitingFor === room.you) {
+    return (
+      <div className="notice" role="status">
+        <p>Waiting for your video to catch up…</p>
+      </div>
+    )
+  }
+  const partner = room.participants.find((p) => p.id === waitingFor)
+  if (!partner?.connected) return null // PartnerNotice already says they're reconnecting
+  return (
+    <div className="notice" role="status">
+      <p>Waiting for {partner.name}…</p>
+    </div>
+  )
 }
 
 function CopyLinkButton() {

@@ -332,8 +332,62 @@ button.link {
 }
 
 .notice {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 0.6rem 0.6rem 1.1rem;
+  border-radius: 999px;
+  background: rgba(24, 21, 28, 0.9);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+  white-space: nowrap;
+}
+
+.notice p {
+  margin: 0;
+}
+
+.notice:not(:has(button)) {
+  padding: 0.6rem 1.1rem;
+}
+
+.notices {
   position: absolute;
   top: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Stage layer 1. The app has its own controls, so the video ignores the
+   pointer, except while autoplay is blocked and a click has to reach it. */
+.player-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.player-layer.empty {
+  visibility: hidden; /* keeps the embed alive, unseen */
+}
+
+.player-layer iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  pointer-events: none;
+}
+
+.player-layer.clickable iframe {
+  pointer-events: auto;
+}
+
+.autoplay-prompt {
+  position: absolute;
+  bottom: 1.25rem;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -347,7 +401,7 @@ button.link {
   white-space: nowrap;
 }
 
-.notice p {
+.autoplay-prompt p {
   margin: 0;
 }
 
