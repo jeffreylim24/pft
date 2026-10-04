@@ -129,8 +129,9 @@ export class PlaybackSync {
       }
     } else if (playback.playing) {
       if (!justLoaded && Math.abs(this.player.getCurrentTime() - target) > DRIFT_LIMIT_S) this.seek(target)
-      // play() after the end would start the video over (spec 13).
-      if (!this.expectedPastEnd()) this.player.play()
+      // play() after the end would start the video over (spec 13). A seek
+      // from Ended above starts YouTube playing by itself.
+      if (!this.ended()) this.player.play()
     } else {
       this.player.pause()
       if (!justLoaded && Math.abs(this.player.getCurrentTime() - target) > PAUSED_TOLERANCE_S) {

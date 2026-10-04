@@ -126,6 +126,16 @@ describe('PlaybackSync: following the room', () => {
     expect(player.calls).toEqual([`load:${VIDEO}@590`, 'play'])
   })
 
+  it("doesn't restart a video that ended just before the room's end", () => {
+    apply(state({ playing: true, position: 590 }))
+    player.skew(0.5) // this player runs half a second ahead
+    vi.advanceTimersByTime(9_600)
+    expect(player.getState()).toBe(PlayerState.Ended) // the room expects 599.6
+    apply(state({ playing: true, position: 599.6 })) // a new state, e.g. a welcome
+    expect(player.calls.filter((c) => c === 'play')).toEqual(['play']) // only the first one
+    expect(player.getState()).toBe(PlayerState.Ended)
+  })
+
   it('pauses while disconnected, and catches up when the welcome arrives', () => {
     const playing = state({ playing: true })
     apply(playing)
