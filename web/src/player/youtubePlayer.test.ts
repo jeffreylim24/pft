@@ -146,4 +146,14 @@ describe('YouTubePlayer', () => {
     expect(embed().calls).toContainEqual(['destroy'])
     expect(host.childElementCount).toBe(0)
   })
+
+  it('destroy before the embed is ready still removes it, even if YouTube throws', async () => {
+    const p = new YouTubePlayer(host, api)
+    await flush()
+    embed().destroy = () => {
+      throw new Error('not ready')
+    }
+    expect(() => p.destroy()).not.toThrow()
+    expect(host.childElementCount).toBe(0)
+  })
 })

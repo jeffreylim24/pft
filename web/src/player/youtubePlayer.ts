@@ -91,9 +91,14 @@ export class YouTubePlayer implements Player {
     this.destroyed = true
     this.ready = false
     this.queue = []
-    this.embed?.destroy()
-    this.embed = null
-    this.host.replaceChildren()
+    try {
+      this.embed?.destroy() // may throw before onReady, when YouTube hasn't added its methods yet
+    } catch {
+      /* the iframe is removed below anyway */
+    } finally {
+      this.embed = null
+      this.host.replaceChildren()
+    }
   }
 
   private becameReady(): void {
