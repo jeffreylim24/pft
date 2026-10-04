@@ -57,13 +57,25 @@ describe('PlayerLayer', () => {
     const { container } = render(<PlayerLayer createPlayer={createPlayer} />)
     player.blockAutoplay()
     setPlayback({ videoId: VIDEO, playing: true, updatedAt: Date.now() })
-    expect(screen.getByText('Your browser blocked the video from playing.')).toBeTruthy()
+    expect(screen.getByText('Your browser blocked the video. Click the video to start it.')).toBeTruthy()
     expect(container.querySelector('.player-layer.clickable')).not.toBeNull()
 
     player.blockAutoplay(false)
     fireEvent.click(screen.getByRole('button', { name: 'Start video' }))
     expect(player.getState()).toBe(PlayerState.Playing)
     expect(screen.queryByRole('button', { name: 'Start video' })).toBeNull()
+  })
+
+  it("lets clicks reach the video while the room waits for this browser, so an ad's Skip works", () => {
+    const { container } = render(<PlayerLayer createPlayer={createPlayer} />)
+    setPlayback({ videoId: VIDEO, playing: true, updatedAt: Date.now() })
+    expect(container.querySelector('.player-layer.clickable')).toBeNull()
+    setPlayback({ playing: false, waitingFor: 'p2', autoResume: true })
+    expect(container.querySelector('.player-layer.clickable')).toBeNull() // waiting for the partner
+    setPlayback({ waitingFor: 'me' })
+    expect(container.querySelector('.player-layer.clickable')).not.toBeNull()
+    setPlayback({ playing: true, waitingFor: null, autoResume: false, updatedAt: Date.now() })
+    expect(container.querySelector('.player-layer.clickable')).toBeNull()
   })
 })
 

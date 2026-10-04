@@ -363,10 +363,12 @@ button.link {
 }
 
 /* Stage layer 1. The app has its own controls, so the video ignores the
-   pointer, except while autoplay is blocked and a click has to reach it. */
+   pointer (spec 5), except when a click has to reach it: while autoplay is
+   blocked, and while the room waits for this browser (an ad's Skip). */
 .player-layer {
   position: absolute;
   inset: 0;
+  pointer-events: none;
 }
 
 .player-layer.empty {
@@ -381,6 +383,7 @@ button.link {
   pointer-events: none;
 }
 
+.player-layer.clickable,
 .player-layer.clickable iframe {
   pointer-events: auto;
 }

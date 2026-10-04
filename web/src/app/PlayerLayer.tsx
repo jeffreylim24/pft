@@ -1,6 +1,7 @@
 // Stage layer 1: the YouTube player, kept in step with the room by
-// PlaybackSync. When the browser blocks playback it offers a button, and
-// lets clicks reach the video, so one click can start it.
+// PlaybackSync. Clicks reach the video only when they're needed: when the
+// browser blocks playback, so one click can start it, and while the room
+// waits for this browser, so an ad's Skip button works.
 import { useEffect, useRef } from 'react'
 import type { Player } from '../player/player'
 import { usePlayerStore } from '../player/store'
@@ -18,6 +19,7 @@ export function PlayerLayer({ createPlayer = createYouTubePlayer }: { createPlay
   const playerRef = useRef<Player | null>(null)
   const hasVideo = useAppStore((s) => s.room?.playback.videoId != null)
   const blocked = usePlayerStore((s) => s.autoplayBlocked)
+  const waitingForMe = useAppStore((s) => s.room !== null && s.room.playback.waitingFor === s.room.you)
 
   useEffect(() => {
     const player = createPlayer(hostRef.current!)
@@ -40,14 +42,16 @@ export function PlayerLayer({ createPlayer = createYouTubePlayer }: { createPlay
     }
   }, [createPlayer])
 
-  const classes = ['player-layer', hasVideo ? '' : 'empty', blocked ? 'clickable' : ''].filter(Boolean).join(' ')
+  const clickable = blocked || waitingForMe
+  const classes = ['player-layer', hasVideo ? '' : 'empty', clickable ? 'clickable' : ''].filter(Boolean).join(' ')
   return (
     <>
       <div ref={hostRef} className={classes} />
       {blocked && (
         <div className="autoplay-prompt" role="alert">
-          <p>Your browser blocked the video from playing.</p>
-          {/* play() runs inside the click, so the browser sees a user gesture. */}
+          <p>Your browser blocked the video. Click the video to start it.</p>
+          {/* A second way in. play() runs inside the click, but Safari may not
+              count a click on our page as a gesture inside YouTube's iframe. */}
           <button type="button" className="primary" onClick={() => playerRef.current?.play()}>
             Start video
           </button>
