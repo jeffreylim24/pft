@@ -92,16 +92,34 @@ describe('Toolbar playback controls', () => {
     expect(sock.sentOfType('playback.play')).toEqual([{ type: 'playback.play', position: 0 }])
   })
 
-  it('the seek bar sends one seek, when released', () => {
+  it("the seek bar sends one seek, on the input's change event", () => {
     act(() => usePlayerStore.setState({ duration: 300 }))
     playback({ position: 10 })
     const seek = screen.getByRole('slider', { name: 'Seek' })
-    fireEvent.change(seek, { target: { value: '120' } })
-    fireEvent.change(seek, { target: { value: '150' } })
+    // Dragging fires input events, which only move the bar and the time.
+    fireEvent.input(seek, { target: { value: '120' } })
+    fireEvent.input(seek, { target: { value: '150' } })
+    fireEvent.pointerUp(seek)
+    fireEvent.keyUp(seek, { key: 'ArrowRight' })
+    fireEvent.blur(seek)
     expect(sock.sentOfType('playback.seek')).toEqual([])
     expect(screen.getByText('2:30 / 5:00')).toBeTruthy()
-    fireEvent.pointerUp(seek)
+    // Releasing it, or each key step, fires change once.
+    fireEvent.change(seek)
     expect(sock.sentOfType('playback.seek')).toEqual([{ type: 'playback.seek', position: 150 }])
+    fireEvent.change(seek) // nothing new to send
+    expect(sock.sentOfType('playback.seek')).toHaveLength(1)
+  })
+
+  it('a connection drop mid-drag drops the scrub, so it is never sent', () => {
+    act(() => usePlayerStore.setState({ duration: 300 }))
+    playback({ position: 10 })
+    const seek = screen.getByRole('slider', { name: 'Seek' })
+    fireEvent.input(seek, { target: { value: '150' } })
+    act(() => sock.serverClose(1006))
+    expect(screen.getByText('0:10 / 5:00')).toBeTruthy() // back to the room's time
+    fireEvent.change(seek)
+    expect(sock.sentOfType('playback.seek')).toEqual([])
   })
 
   it("shows the room's time, ticking while playing", async () => {

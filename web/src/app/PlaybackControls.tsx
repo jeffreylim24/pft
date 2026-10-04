@@ -1,7 +1,7 @@
 // The toolbar's playback controls (spec 5). They only send commands. What
 // the room does comes back as a playback broadcast, for the sender too
 // (spec 7.2).
-import { useEffect, useReducer, useState, type FormEvent } from 'react'
+import { useEffect, useReducer, useRef, useState, type FormEvent } from 'react'
 import { setMovieVolume, usePlayerStore } from '../player/store'
 import { clampToDuration, expectedPosition, formatTime } from '../player/timing'
 import { parseVideoId } from '../player/youtubeUrl'
@@ -71,6 +71,8 @@ function useTicker(active: boolean): void {
 export function PlaybackControls({ playback, enabled }: { playback: PlaybackState; enabled: boolean }) {
   const duration = usePlayerStore((s) => s.duration)
   const [scrub, setScrub] = useState<number | null>(null) // the seek bar's value while it's being dragged
+  const scrubRef = useRef<number | null>(null) // the same, for the native change listener
+  const seekRef = useRef<HTMLInputElement>(null)
   useTicker(playback.playing)
   const hasVideo = playback.videoId !== null
   const expected = expectedPosition(playback, serverNow())
@@ -85,11 +87,30 @@ export function PlaybackControls({ playback, enabled }: { playback: PlaybackStat
     else send({ type: 'playback.play', position: duration > 0 && now >= duration ? 0 : at })
   }
 
-  function commitSeek() {
-    if (scrub === null) return
-    send({ type: 'playback.seek', position: scrub })
-    setScrub(null)
+  function scrubTo(value: number | null) {
+    scrubRef.current = value
+    setScrub(value)
   }
+
+  // The native change event fires once when a drag ends (mouse, touch or a
+  // cancelled pointer) and once per key step. React's onChange follows the
+  // input event instead, so it only moves the bar.
+  useEffect(() => {
+    const input = seekRef.current!
+    const commit = () => {
+      const position = scrubRef.current
+      if (position === null) return
+      scrubTo(null)
+      send({ type: 'playback.seek', position })
+    }
+    input.addEventListener('change', commit)
+    return () => input.removeEventListener('change', commit)
+  }, [])
+
+  // A drop mid-drag forgets the scrub, so it can't be sent later.
+  useEffect(() => {
+    if (!enabled) scrubTo(null)
+  }, [enabled])
 
   return (
     <div className="tool-group">
@@ -97,6 +118,7 @@ export function PlaybackControls({ playback, enabled }: { playback: PlaybackStat
         {playing ? '⏸' : '▶'}
       </button>
       <input
+        ref={seekRef}
         type="range"
         className="seek"
         aria-label="Seek"
@@ -105,10 +127,7 @@ export function PlaybackControls({ playback, enabled }: { playback: PlaybackStat
         step={0.1}
         value={scrub ?? position}
         disabled={!enabled || !hasVideo || duration === 0}
-        onChange={(e) => setScrub(Number(e.target.value))}
-        onPointerUp={commitSeek}
-        onKeyUp={commitSeek}
-        onBlur={commitSeek}
+        onChange={(e) => scrubTo(Number(e.target.value))}
       />
       <span className="time">{`${formatTime(scrub ?? position)} / ${formatTime(duration)}`}</span>
     </div>
