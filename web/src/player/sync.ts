@@ -18,10 +18,16 @@ export const STALL_MS = 2_000
 export const PAUSED_TOLERANCE_S = 0.25
 /** How close a recovering player must be to the room position to say ready. */
 export const READY_TOLERANCE_S = 0.5
-/** Ticks in a row the video must move before a recovering player counts as playable. */
-export const PROGRESS_TICKS = 2
+/**
+ * Seconds a recovering player must really move before it counts as playable.
+ * YouTube's getCurrentTime() runs up to 1 s ahead of the player while it
+ * says Playing, even when the video is stuck behind an ad, so this is more.
+ */
+export const RECOVERY_PROGRESS_S = 1.5
 /** Smaller changes in the player's time don't count as moving. */
 const MOVED_S = 0.05
+/** A step forward this much more than the time that passed is a jump, not playback. */
+const JUMP_S = 2
 
 export interface SyncInput {
   playback: PlaybackState
@@ -49,9 +55,12 @@ export class PlaybackSync {
   private input: SyncInput | null = null
   private loadedVideoId: string | null = null
   private lastSeekAt = -Infinity // local ms of our last load or seek
-  private lastTime = 0 // the player's time at the last tick
+  // Progress is measured from a high-water mark, because YouTube's reading
+  // can creep ahead and snap back while the video isn't moving at all.
+  private highWater = 0 // the furthest the player's time has moved since our last apply, cue or seek
+  private sampledAt = 0 // local ms of the last reading
   private lastProgressAt = 0 // local ms when the player's time last moved
-  private progressTicks = 0
+  private recoveryProgress = 0 // seconds the video has moved since recovery began
   private stalledSent = false
   private recovery: Recovery = 'none'
 
@@ -96,7 +105,7 @@ export class PlaybackSync {
     const { playback, you } = this.input!
     this.recovery = 'none'
     this.stalledSent = false
-    this.progressTicks = 0
+    this.recoveryProgress = 0
     if (playback.videoId === null) return
     const justLoaded = playback.videoId !== this.loadedVideoId
     if (justLoaded) {
@@ -133,11 +142,10 @@ export class PlaybackSync {
     if (!input?.connected || input.playback.videoId === null) return
     const now = Date.now()
     const time = this.player.getCurrentTime()
-    const moved = Math.abs(time - this.lastTime) > MOVED_S
-    this.lastTime = time
-    if (moved) this.lastProgressAt = now
+    const progress = this.progressTo(time, now)
+    if (progress > 0) this.lastProgressAt = now
     if (this.recovery !== 'none') {
-      this.recover(time, moved)
+      this.recover(time, progress)
       return
     }
     const stalled = input.playback.playing && !this.stalledSent && now - this.lastProgressAt > STALL_MS
@@ -149,7 +157,7 @@ export class PlaybackSync {
 
   // Spec 7.3, recovery: wait until the player can play again, pause and
   // seek to the room position, then say ready.
-  private recover(time: number, moved: boolean): void {
+  private recover(time: number, progress: number): void {
     // A player that can't play must not hold the room.
     if (usePlayerStore.getState().error !== null) {
       if (this.recovery !== 'readySent' && this.send({ type: 'playback.ready' })) this.recovery = 'readySent'
@@ -157,8 +165,9 @@ export class PlaybackSync {
     }
     const state = this.player.getState()
     if (this.recovery === 'awaitingProgress') {
-      this.progressTicks = moved && state === PlayerState.Playing ? this.progressTicks + 1 : 0
-      if (state === PlayerState.Ended || this.progressTicks >= PROGRESS_TICKS) this.startSettling()
+      this.recoveryProgress += progress
+      const playable = state === PlayerState.Playing && this.recoveryProgress > RECOVERY_PROGRESS_S
+      if (state === PlayerState.Ended || playable) this.startSettling()
       return
     }
     if (this.recovery === 'settling') {
@@ -217,6 +226,7 @@ export class PlaybackSync {
   private cue(videoId: string, start: number): void {
     this.player.load(videoId, start)
     this.lastSeekAt = Date.now()
+    this.markProgress()
   }
 
   private seek(seconds: number): void {
@@ -227,8 +237,26 @@ export class PlaybackSync {
 
   // A jump we caused isn't progress, and it restarts the stall clock.
   private markProgress(): void {
-    this.lastTime = this.player.getCurrentTime()
-    this.lastProgressAt = Date.now()
+    this.highWater = this.player.getCurrentTime()
+    this.sampledAt = this.lastProgressAt = Date.now()
+  }
+
+  // How far the video has moved since the last reading, in seconds. Only
+  // time past the high-water mark counts, so a reading that runs ahead and
+  // snaps back counts once. A step can't count for more than the time that
+  // passed, and a much bigger one (a cued start arriving late, say) is a
+  // jump: the mark moves without counting it.
+  private progressTo(time: number, now: number): number {
+    const elapsed = (now - this.sampledAt) / 1000
+    this.sampledAt = now
+    const step = time - this.highWater
+    if (step > elapsed + JUMP_S) {
+      this.highWater = time
+      return 0
+    }
+    if (step <= MOVED_S) return 0
+    this.highWater = time
+    return Math.min(step, elapsed)
   }
 
   /** Where the player should be now, within the video. */

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientMessage, PlaybackState } from '../protocol/schemas'
-import { FakePlayer } from './fakePlayer'
+import { FakePlayer, type FakePlayerOptions } from './fakePlayer'
 import { PlayerState } from './player'
 import { initialPlayerFacts, setMovieVolume, usePlayerStore } from './store'
 import { PlaybackSync } from './sync'
@@ -30,11 +30,9 @@ function apply(playback: PlaybackState, connected = true) {
   sync.update({ playback, you: 'me', connected })
 }
 
-beforeEach(() => {
-  vi.useFakeTimers()
-  vi.setSystemTime(1_800_000_000_000)
-  usePlayerStore.setState(initialPlayerFacts)
-  player = new FakePlayer({ videoDuration: 600 })
+function start(opts: FakePlayerOptions = {}) {
+  sync?.destroy()
+  player = new FakePlayer({ videoDuration: 600, ...opts })
   sent = []
   sync = new PlaybackSync({
     player,
@@ -44,6 +42,16 @@ beforeEach(() => {
     },
     serverNow,
   })
+}
+
+/** A player whose time reads ahead while it says Playing, like YouTube's widget. */
+const ESTIMATING = { estimateAhead: { updateMs: 500 } }
+
+beforeEach(() => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1_800_000_000_000)
+  usePlayerStore.setState(initialPlayerFacts)
+  start()
 })
 
 afterEach(() => {
@@ -147,7 +155,13 @@ describe('PlaybackSync: following the room', () => {
 describe('PlaybackSync: stalls and getting ready', () => {
   const types = () => sent.map((m) => m.type)
 
-  it('reports a stall once when the player stops moving for over 2 s', () => {
+  const players: Array<[string, FakePlayerOptions]> = [
+    ['player', {}],
+    ['player that estimates ahead', ESTIMATING],
+  ]
+
+  it.each(players)('reports a stall once when the %s stops moving for over 2 s', (_, opts) => {
+    start(opts)
     apply(state({ playing: true }))
     vi.advanceTimersByTime(1_000)
     player.stall()
@@ -181,7 +195,8 @@ describe('PlaybackSync: stalls and getting ready', () => {
     expect(types()).toEqual([])
   })
 
-  it('after its own stall: keeps playing until the video moves, then pauses at the room position and sends ready', () => {
+  it.each(players)('after its own stall (%s): keeps playing until the video moves, then pauses at the room position and sends ready', (_, opts) => {
+    start(opts)
     apply(state({ playing: true }))
     vi.advanceTimersByTime(1_000)
     player.stall() // an ad starts
@@ -194,7 +209,9 @@ describe('PlaybackSync: stalls and getting ready', () => {
     expect(types()).toEqual(['playback.stalled'])
 
     player.unstall() // the ad ends and the video moves again
-    vi.advanceTimersByTime(1_000)
+    vi.advanceTimersByTime(1_500)
+    expect(types()).toEqual(['playback.stalled']) // 1.5 s of progress isn't enough yet
+    vi.advanceTimersByTime(500)
     expect(player.calls.slice(-2)).toEqual(['pause', 'seek:3.25'])
     expect([player.getState(), player.getCurrentTime()]).toEqual([PlayerState.Paused, 3.25])
     expect(types()).toEqual(['playback.stalled', 'playback.ready'])
@@ -212,11 +229,42 @@ describe('PlaybackSync: stalls and getting ready', () => {
     expect(types()).toEqual([])
   })
 
-  it('after a reload, a snapshot waiting for me: loads, plays until the video moves, pauses at the position, sends ready', () => {
+  it.each(players)('after a reload (%s), a snapshot waiting for me: loads, plays until the video moves, pauses at the position, sends ready', (_, opts) => {
+    start(opts)
     apply(state({ position: 120, waitingFor: 'me', autoResume: true }))
-    vi.advanceTimersByTime(1_000)
+    vi.advanceTimersByTime(1_500)
+    expect(types()).toEqual([])
+    vi.advanceTimersByTime(500)
     expect(player.calls).toEqual([`load:${VIDEO}@120`, 'play', 'pause', 'seek:120'])
     expect(types()).toEqual(['playback.ready'])
+  })
+
+  it("a jump in the player's time isn't progress, so a stuck player still stalls", () => {
+    apply(state({ playing: true }))
+    vi.advanceTimersByTime(1_000)
+    player.stall()
+    vi.advanceTimersByTime(1_000)
+    player.skew(5) // e.g. a cued start arriving late; the video still isn't moving
+    vi.advanceTimersByTime(1_500)
+    expect(types()).toEqual(['playback.stalled'])
+  })
+
+  it("a stuck player whose reading runs a full second ahead isn't playable", () => {
+    start({ estimateAhead: { updateMs: 10_000 } }) // no update arrives while the video is stuck
+    apply(state({ position: 30, waitingFor: 'me', autoResume: true }))
+    player.stall() // an ad
+    vi.advanceTimersByTime(5_000)
+    expect(player.getCurrentTime()).toBe(31) // the reading is 1 s ahead
+    expect(types()).toEqual([])
+  })
+
+  it('a step counts for no more than the time that passed', () => {
+    apply(state({ position: 30, waitingFor: 'me', autoResume: true }))
+    player.stall() // an ad
+    vi.advanceTimersByTime(1_000)
+    player.skew(1.6) // too small to be a jump, too big to be 250 ms of playback
+    vi.advanceTimersByTime(2_000)
+    expect(types()).toEqual([])
   })
 
   it('recovers when the room is waiting past the end of the video', () => {
@@ -233,7 +281,7 @@ describe('PlaybackSync: stalls and getting ready', () => {
     vi.advanceTimersByTime(3_000)
     expect(types()).toEqual([])
     apply({ ...waiting }, true) // the welcome after reconnecting carries the same state
-    vi.advanceTimersByTime(1_000)
+    vi.advanceTimersByTime(2_000)
     expect(player.calls.slice(-2)).toEqual(['pause', 'seek:30'])
     expect(types()).toEqual(['playback.ready'])
   })
@@ -258,7 +306,7 @@ describe('PlaybackSync: stalls and getting ready', () => {
     player.blockAutoplay(false)
     player.play() // the person clicks Start video
     expect(usePlayerStore.getState().autoplayBlocked).toBe(false)
-    vi.advanceTimersByTime(1_000)
+    vi.advanceTimersByTime(2_000)
     expect(player.calls.slice(-2)).toEqual(['pause', 'seek:2.25'])
     expect(types()).toEqual(['playback.stalled', 'playback.ready'])
   })

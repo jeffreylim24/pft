@@ -87,6 +87,38 @@ describe('FakePlayer', () => {
     expect(errors).toEqual([150])
   })
 
+  it("estimateAhead: while playing, reads like YouTube's widget, up to 1 s past the last update", () => {
+    const p = new FakePlayer({ videoDuration: 100, now: () => now, estimateAhead: { updateMs: 500 } })
+    p.load(ID, 10)
+    p.play()
+    now += 250
+    expect(p.getCurrentTime()).toBe(10.25) // the estimate matches a moving video
+    now += 750
+    p.stall()
+    const readings: number[] = []
+    for (let i = 0; i < 4; i++) {
+      now += 250
+      readings.push(p.getCurrentTime())
+    }
+    // Frozen at 11, it creeps ahead and snaps back at each update.
+    expect(readings).toEqual([11.25, 11, 11.25, 11])
+    p.pause()
+    expect(p.getCurrentTime()).toBe(11) // a paused player reads the true time
+  })
+
+  it('estimateAhead: the estimate stops at 1 s when updates are slow', () => {
+    const p = new FakePlayer({ videoDuration: 100, now: () => now, estimateAhead: { updateMs: 5_000 } })
+    p.load(ID)
+    p.play()
+    p.stall()
+    now += 750
+    expect(p.getCurrentTime()).toBe(0.75)
+    now += 2_000
+    expect(p.getCurrentTime()).toBe(1)
+    now += 2_250
+    expect(p.getCurrentTime()).toBe(0)
+  })
+
   it('reports Ended as an event, and play() after the end starts over without polling first', () => {
     const p = make()
     const states: number[] = []
