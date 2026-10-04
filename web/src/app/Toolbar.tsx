@@ -1,26 +1,18 @@
 import type { RoomState } from './roomState'
 import { navigate } from './routes'
+import { LoadForm, PlaybackControls, VolumeSlider } from './PlaybackControls'
 import { leaveRoom } from './session'
+import { useAppStore } from './store'
 
-// The controls are laid out now; plans 3-5 bring them to life.
+// Playback controls work now (plan 3). Mic, camera and the pens come in plans 4 and 5.
 export function Toolbar({ room }: { room: RoomState }) {
+  const connected = useAppStore((s) => s.status.kind === 'open')
   return (
     <footer className="toolbar">
-      <div className="tool-group grow">
-        <input className="url-input" placeholder="Paste a YouTube link" aria-label="YouTube link" disabled />
-        <button type="button" disabled>
-          Load
-        </button>
-      </div>
+      <LoadForm enabled={connected} />
+      <PlaybackControls playback={room.playback} enabled={connected} />
       <div className="tool-group">
-        <button type="button" aria-label="Play" disabled>
-          ▶
-        </button>
-        <input type="range" className="seek" aria-label="Seek" disabled />
-        <span className="time">0:00 / 0:00</span>
-      </div>
-      <div className="tool-group">
-        <input type="range" className="volume" aria-label="Volume" disabled />
+        <VolumeSlider />
         <button type="button" disabled>
           Mic
         </button>

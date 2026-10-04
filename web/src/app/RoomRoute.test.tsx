@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ServerMessage } from '../protocol/schemas'
+import { initialPlayerFacts, usePlayerStore } from '../player/store'
 import { welcome } from '../test/fakeSocket'
 import { applyServerMessage } from './roomState'
+import type { RoomState } from './roomState'
 import { RoomRoute } from './RoomRoute'
 import { initialAppState, useAppStore, type SessionStatus } from './store'
 
@@ -16,9 +18,19 @@ function show(status: SessionStatus, withRoom = true) {
   render(<RoomRoute roomId={roomId} />)
 }
 
+const VIDEO = 'dQw4w9WgXcQ'
+
+function showRoom(changes: Partial<RoomState>) {
+  useAppStore.setState({ roomId, status: { kind: 'open' }, room: { ...room, ...changes } })
+  render(<RoomRoute roomId={roomId} />)
+}
+
+const waitingFor = (id: string) => ({ ...room.playback, videoId: VIDEO, waitingFor: id, autoResume: true })
+
 afterEach(() => {
   cleanup()
   useAppStore.setState(initialAppState)
+  usePlayerStore.setState(initialPlayerFacts)
   localStorage.clear()
 })
 
@@ -84,5 +96,34 @@ describe('RoomRoute', () => {
     useAppStore.setState({ roomId: 'AAAAAAAAAAAAAAAAAAAAAA', status: { kind: 'open' }, room })
     render(<RoomRoute roomId={roomId} />)
     expect(screen.getByRole('button', { name: 'Join' })).toBeTruthy()
+  })
+
+  it('shows the empty stage until a video is loaded', () => {
+    showRoom({})
+    expect(screen.getByText('No video loaded')).toBeTruthy()
+    act(() => useAppStore.setState({ room: { ...room, playback: { ...room.playback, videoId: VIDEO } } }))
+    expect(screen.queryByText('No video loaded')).toBeNull()
+  })
+
+  it('says who playback is waiting for', () => {
+    showRoom({ participants: [...room.participants, { ...partner, connected: true }], playback: waitingFor('p2') })
+    expect(screen.getByText('Waiting for Sam…')).toBeTruthy()
+  })
+
+  it('tells the person being waited for that their video is catching up', () => {
+    showRoom({ playback: waitingFor('me') })
+    expect(screen.getByText('Waiting for your video to catch up…')).toBeTruthy()
+  })
+
+  it('shows only the reconnecting notice while waiting for a partner who dropped', () => {
+    showRoom({ participants: [...room.participants, { ...partner, connected: false }], playback: waitingFor('p2') })
+    expect(screen.getByText('Sam is reconnecting…')).toBeTruthy()
+    expect(screen.queryByText('Waiting for Sam…')).toBeNull()
+  })
+
+  it("says when the video can't be played here", () => {
+    showRoom({ playback: { ...room.playback, videoId: VIDEO } })
+    act(() => usePlayerStore.setState({ error: 150 }))
+    expect(screen.getByRole('alert').textContent).toBe("This video can't be played here.")
   })
 })

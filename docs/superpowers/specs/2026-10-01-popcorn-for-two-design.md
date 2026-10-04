@@ -101,7 +101,7 @@ Browser A ◄──── WebRTC (cams + mic, P2P, TURN fallback) ────�
 - **Modules (one job each):**
   - `net/`: typed WebSocket client. It handles the `hello`/`welcome` handshake, reconnects with exponential backoff (0.5s, 1s, 2s, 4s, capped at 8s), and measures the clock offset. It's the only code that talks to the server.
   - `call/`: `getUserMedia` (with echo cancellation and noise suppression on), the `RTCPeerConnection` using the **perfect negotiation** pattern, ICE restarts, and the remote stream.
-  - `player/`: the interface `Player { load(videoId); play(); pause(); seek(seconds); getCurrentTime(); getDuration(); onStateChange(cb) }`. `YouTubePlayer` implements it using the IFrame API. `FakePlayer` is a test double used by end-to-end tests.
+  - `player/`: the interface `Player { load(videoId, startSeconds?); play(); pause(); seek(seconds); setVolume(volume); getCurrentTime(); getDuration(); getState(); onStateChange(cb); onError(cb); onAutoplayBlocked(cb); destroy() }`. `load` cues a video without playing it. `YouTubePlayer` implements it using the IFrame API. `FakePlayer` is a test double, driven by a clock, used by unit and end-to-end tests. `PlaybackSync` drives a `Player` from the room's playback state (section 13).
   - `stage/`: the stage container plus coordinate helpers (`toFraction`, `toPixels`). It also handles cam tiles and drag/resize, using hand-written pointer-event code. Positions are stored as fractions, which a pixel-based library like react-rnd would fight against.
   - `ink/`: two canvases (sticky and fading), stroke rendering, fade animation, draw-mode handling.
   - `cursors/`: renders the partner's cursor with their name and color, and smooths its movement between updates.
@@ -236,7 +236,7 @@ The expected position at server time `now` is `position + (playing ? (now − up
   - The stalled client waits until its player is playable again (for example, the ad has ended), pauses and seeks to `position`, then sends `playback.ready`.
   - If `autoResume` is set and the sender is the person being waited for, the server resumes: `playing = true`, `updatedAt = now`, `waitingFor = null`.
 - **Manual override:** any manual `play`, `pause` or `seek` clears the waiting state.
-- **After a reconnect:** if the snapshot's `waitingFor` is the client's own ID, it loads the video, pauses and seeks to `position`, and sends `playback.ready` once the player is buffered. That's what lets a partner who dropped out auto-resume (section 9.4).
+- **After a reconnect:** if the snapshot's `waitingFor` is the client's own ID, it loads the video and lets it play until the video itself moves (so any ad is over), then pauses, seeks to `position`, and sends `playback.ready` once the player is paused there. That's what lets a partner who dropped out auto-resume (section 9.4). The same steps follow the client's own stall.
 
 ### 7.4 YouTube errors
 
@@ -395,3 +395,37 @@ These fill gaps found when the spec was reviewed for implementation. Where they 
   Now a duplicated tab, a new tab or a reopened link shows "Welcome back" with **Rejoin**. Rejoining takes over the seat, and the old tab shows "You're in this room in another tab". **Leave** still removes the token, and the room-full page keeps **Try again** for a private window that was closed and reopened. The trade-off: two people can't share one browser profile in a room. A normal window and a private window are still two people, but two Chrome Incognito windows share storage and count as one. When the server says a room doesn't exist (close code 4404), the client deletes that room's token, so an expired room's link says "Welcome back" at most once. Tokens for expired rooms that are never reopened stay in `localStorage`. They're tiny and never shown.
 - **Unknown rooms (plan 2):** there's no room-lookup endpoint, so a stale link shows the lobby first and "Room not found" after **Join**.
 - **Test tooling (plan 2):** Vitest 4 and jsdom 29, because Vitest 5 and jsdom 30 don't support Node 25. Vitest workers run with `--no-experimental-webstorage`, because Node 25's own `localStorage` hides jsdom's.
+
+**Client (plan 3)**
+- **Player interface:** `load(videoId, startSeconds?)` cues without playing. Besides the calls in section 4.3, the interface has `setVolume`, `getState`, `onError`, `onAutoplayBlocked` and `destroy`. `getDuration()` is 0 until the video's metadata loads. The IFrame API is typed by hand, so there's no `@types` package.
+- **Getting ready when the room waits for you:**
+  - This applies after the client's own stall, and after a reconnect or reload.
+  - The player plays until the video itself has really moved, so an ad or buffering is over: the player reports Playing and its time has gone more than 1.5 s past where recovery began. YouTube's `getCurrentTime()` estimates up to 1 s ahead of the player's last report while it says Playing, even when the video is stuck behind an ad, so the reading creeps ahead and snaps back. Progress is therefore measured past a high-water mark, reset on every apply, cue and seek. A step counts for no more than the time since the last reading (ticks are 250 ms apart), and a step more than 2 s beyond that is a jump (a cued start arriving late, say), which moves the mark without counting. The mark also comes down, without counting, when a reading falls more than 1.5 s below it. YouTube's `seekTo` is only a message to its iframe, so right after the client's own seek the reading is still the old time, and a seek back would otherwise leave the mark above the video and report a false stall.
+  - The same progress measure drives stall reports, so a stuck player whose reading creeps ahead still stalls, up to 1 s later than the 2 s rule alone would say.
+  - Then it pauses, seeks to `position`, and sends `playback.ready` once the player is paused within 0.5 s of it. "Cued" and "Ended" count as paused, so a room waiting past the end still recovers.
+  - Cueing and seeking can't avoid playing, because YouTube starts a cued video when it's seeked. The person being waited for may hear a fraction of a second of audio.
+  - If the player has already ended, or the room's position is past the end, the client doesn't play, because that would start the video over. It pauses at the position and says ready. The "past the end" check needs the duration, so it applies only once the duration is known. After a reload the duration is 0, so the client cues at the position and plays. How YouTube handles a start past the end is unverified.
+  - The same goes for a playing room: a player that has ended is never told to play, even if the room's expected position is still just short of the end.
+  - If the player reaches the end before the room's position, the client seeks back to the position and then says ready.
+  - If the player reports an error while the room waits for it, the client sends `playback.ready` at once, so an unplayable video never holds the partner.
+- **While the WebSocket is down:** the local player pauses, and no `stalled` or `ready` is sent. After the next `welcome`, the snapshot is applied as new. The connection status turns open just before the welcome arrives, so the client doesn't apply the stale pre-drop state then: it waits for the welcome's new playback state.
+- **Small sync rules:**
+  - A paused player more than 0.25 s from the room position is seeked. One that is cued, unstarted or ended is cued again at the position instead, because seeking it would start it.
+  - If YouTube starts playing while the room is paused, the client pauses it again.
+  - Drift checks skip a player that isn't reporting "playing".
+  - A player error stops stall reports.
+- **Blocked autoplay:** when YouTube reports `onAutoplayBlocked`, the stage shows "Your browser blocked the video. Click the video to start it." with **Start video** as a second way in, and the video itself becomes clickable until it plays. The prompt points at the video because Safari may not count a click on our page as a user gesture inside YouTube's cross-origin iframe. Until then the stall rule makes the room wait for that person.
+- **Clickable while the room waits for you:** the video also takes clicks while the room's `waitingFor` is you, so YouTube's Skip ad button works and an ad doesn't hold the partner for its whole length. Otherwise, apart from blocked autoplay, the player layer and its iframe ignore the pointer (section 5).
+- **A player that never loads:** if the YouTube player can't be created, or doesn't become ready within 15 s (YouTube's second script blocked, or the iframe replaced by a privacy extension), the client shows the "didn't load" message, the same as a failed IFrame API script. The error rule (no stall reports, and `ready` at once while the room waits) keeps the room from being held. If the player does become ready later, the first state it reports (its queued cue reports one) clears the message, so stall reports resume. YouTube's own error codes stay until a new video loads.
+- **Controls:**
+  - Play and Pause send the room's expected position, clamped to the duration. Play at or past the end sends 0.
+  - The seek bar shows the room's time and sends one `playback.seek` on the input's native `change` event, which fires once when a drag ends and once per key step. Dragging only moves the bar. If the seek bar becomes disabled mid-drag (the connection drops, or a new video loads), the drag is dropped and never sent.
+  - The time display uses `serverNow()`, not the local player.
+  - The volume slider sets this browser's YouTube volume only, and isn't saved.
+- **Notices:**
+  - "Waiting for {name}…" when the room is waiting for the partner, and "Waiting for your video to catch up…" when it's waiting for you. "{name} is reconnecting…" replaces the waiting notice while the partner is away.
+  - YouTube errors 2, 5, 100, 101 and 150 show "This video can't be played here."
+  - A failed IFrame API script shows its own message, and other error codes show the number.
+- **Player facts:** the video's duration, a player error, blocked autoplay and the volume live in `player/store.ts`, apart from the room store, because they never go over the wire. Only `PlaybackSync` and the volume slider write them.
+- **FakePlayer** copies YouTube's quirks the sync logic depends on: a cued video doesn't play until told to; seeking a cued, unstarted or ended video starts it; `play()` after the end starts over; the duration is 0 until the video first plays; and the end is reported as an `Ended` state change as soon as any command or state read catches up with the clock. With `estimateAhead`, it reads the time the way YouTube's widget does while playing: its last report plus the time since, up to 1 s.
+- **Known trade-off:** the server auto-pauses a stall at the expected position, about 2 seconds past where the stalled player froze, so that person skips those seconds. Fixing it would need a `position` on `playback.stalled`.
