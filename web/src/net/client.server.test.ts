@@ -42,6 +42,12 @@ function welcomeOf(messages: ServerMessage[]) {
 
 const waitOpts = { timeout: 3000, interval: 20 }
 
+const VIDEO = 'dQw4w9WgXcQ'
+
+function playbackStates(messages: ServerMessage[]) {
+  return messages.flatMap((m) => (m.type === 'playback' ? [m.state] : []))
+}
+
 afterEach(() => {
   for (const c of opened.splice(0)) c.leave()
 })
@@ -119,5 +125,70 @@ describe.skipIf(!base)('RoomClient against the Go server', () => {
     await vi.waitFor(() => expect(second.client.status.kind).toBe('open'), waitOpts)
     await vi.waitFor(() => expect(first.client.status).toEqual({ kind: 'closed', reason: 'replaced' }), waitOpts)
     expect(welcomeOf(second.messages).you).toBe(welcomeOf(first.messages).you)
+  })
+
+  it('sends both people the same playback states: load, play, a stall, then ready', async () => {
+    const roomId = await createRoom()
+    const a = connect(roomId, 'Alex')
+    const b = connect(roomId, 'Sam')
+    await vi.waitFor(() => expect([a.client.status.kind, b.client.status.kind]).toEqual(['open', 'open']), waitOpts)
+    const sam = welcomeOf(b.messages).you
+
+    // Both must have received the same n states, in the same order.
+    async function bothSee(n: number) {
+      await vi.waitFor(() => {
+        expect(playbackStates(a.messages)).toHaveLength(n)
+        expect(playbackStates(b.messages)).toHaveLength(n)
+      }, waitOpts)
+      expect(playbackStates(a.messages)).toEqual(playbackStates(b.messages))
+      return playbackStates(a.messages)[n - 1]
+    }
+
+    expect(a.client.send({ type: 'playback.load', videoId: VIDEO })).toBe(true)
+    expect(await bothSee(1)).toMatchObject({ videoId: VIDEO, playing: false, position: 0 })
+
+    a.client.send({ type: 'playback.play', position: 12 })
+    expect(await bothSee(2)).toMatchObject({ playing: true, position: 12, waitingFor: null })
+
+    b.client.send({ type: 'playback.stalled' })
+    const paused = await bothSee(3)
+    expect(paused).toMatchObject({ playing: false, waitingFor: sam, autoResume: true })
+    expect(paused.position).toBeGreaterThanOrEqual(12)
+
+    b.client.send({ type: 'playback.ready' })
+    expect(await bothSee(4)).toMatchObject({
+      playing: true,
+      position: paused.position,
+      waitingFor: null,
+      autoResume: false,
+    })
+  })
+
+  it('after a dropped connection, the snapshot says the room waits for you, and ready resumes it', async () => {
+    const roomId = await createRoom()
+    const sockets: SocketLike[] = []
+    const a = connect(roomId, 'Alex')
+    const b = connect(roomId, 'Sam', { sockets })
+    await vi.waitFor(() => expect([a.client.status.kind, b.client.status.kind]).toEqual(['open', 'open']), waitOpts)
+    const sam = welcomeOf(b.messages).you
+    a.client.send({ type: 'playback.load', videoId: VIDEO })
+    await vi.waitFor(() => expect(playbackStates(a.messages)).toHaveLength(1), waitOpts)
+    a.client.send({ type: 'playback.play', position: 0 })
+    await vi.waitFor(() => expect(playbackStates(b.messages).at(-1)?.playing).toBe(true), waitOpts)
+
+    sockets[0].close() // Sam's network drops; the client comes back with its token
+    await vi.waitFor(
+      () => expect(playbackStates(a.messages).at(-1)).toMatchObject({ playing: false, waitingFor: sam }),
+      waitOpts,
+    )
+    await vi.waitFor(() => expect(b.messages.filter((m) => m.type === 'welcome')).toHaveLength(2), waitOpts)
+    const rejoined = b.messages.filter((m) => m.type === 'welcome')[1]
+    expect(rejoined.snapshot.playback).toMatchObject({ playing: false, waitingFor: sam, autoResume: true })
+
+    expect(b.client.send({ type: 'playback.ready' })).toBe(true)
+    await vi.waitFor(() => {
+      expect(playbackStates(a.messages).at(-1)).toMatchObject({ playing: true, waitingFor: null })
+      expect(playbackStates(b.messages).at(-1)).toMatchObject({ playing: true, waitingFor: null })
+    }, waitOpts)
   })
 })
