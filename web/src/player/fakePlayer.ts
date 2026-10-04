@@ -43,12 +43,14 @@ export class FakePlayer implements Player {
   }
 
   play(): void {
+    this.settle()
     this.calls.push('play')
     // Like YouTube: playing a video that has ended starts it over.
     this.start(this.state === PlayerState.Ended ? 0 : this.getCurrentTime())
   }
 
   pause(): void {
+    this.settle()
     this.calls.push('pause')
     if (this.state !== PlayerState.Playing) return
     this.setTime(this.getCurrentTime())
@@ -56,6 +58,7 @@ export class FakePlayer implements Player {
   }
 
   seek(seconds: number): void {
+    this.settle()
     this.calls.push(`seek:${round(seconds)}`)
     const to = this.duration > 0 ? Math.min(seconds, this.duration) : seconds
     this.setTime(to)
@@ -78,10 +81,7 @@ export class FakePlayer implements Player {
   }
 
   getState(): PlayerStateValue {
-    if (this.state === PlayerState.Playing && this.duration > 0 && this.getCurrentTime() >= this.duration) {
-      this.setTime(this.duration)
-      this.setState(PlayerState.Ended)
-    }
+    this.settle()
     return this.state
   }
 
@@ -125,6 +125,14 @@ export class FakePlayer implements Player {
 
   fail(code: number): void {
     this.errorListeners.emit(code)
+  }
+
+  /** A real player reports the end on its own, so every command first catches up with the clock. */
+  private settle(): void {
+    if (this.state === PlayerState.Playing && this.duration > 0 && this.getCurrentTime() >= this.duration) {
+      this.setTime(this.duration)
+      this.setState(PlayerState.Ended)
+    }
   }
 
   private start(from: number): void {

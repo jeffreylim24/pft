@@ -86,4 +86,17 @@ describe('FakePlayer', () => {
     p.fail(150)
     expect(errors).toEqual([150])
   })
+
+  it('reports Ended as an event, and play() after the end starts over without polling first', () => {
+    const p = make()
+    const states: number[] = []
+    p.onStateChange((s) => states.push(s))
+    p.load(ID, 95)
+    p.play()
+    now += 10_000
+    p.play()
+    expect(states).toEqual([PlayerState.Cued, PlayerState.Playing, PlayerState.Ended, PlayerState.Playing])
+    now += 1_000
+    expect(p.getCurrentTime()).toBe(1)
+  })
 })
