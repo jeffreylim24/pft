@@ -449,6 +449,12 @@ button.link {
   padding: 0.5rem 0.7rem;
 }
 
+.load-error {
+  color: #ffb39c;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
 .seek {
   width: 10rem;
 }
