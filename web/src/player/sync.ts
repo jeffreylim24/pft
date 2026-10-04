@@ -93,6 +93,10 @@ export class PlaybackSync {
       if (prev?.connected !== false) this.player.pause()
       return
     }
+    // The status turns open just before the welcome arrives. Until then the
+    // playback is the stale one from before the drop, and the welcome always
+    // brings a new object (spec 13).
+    if (prev?.connected === false && prev.playback === next.playback) return
     if (!prev?.connected || prev.playback !== next.playback || prev.you !== next.you) this.apply()
   }
 

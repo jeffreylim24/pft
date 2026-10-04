@@ -126,14 +126,17 @@ describe('PlaybackSync: following the room', () => {
     expect(player.calls).toEqual([`load:${VIDEO}@590`, 'play'])
   })
 
-  it('pauses while disconnected, and catches up on reconnect', () => {
+  it('pauses while disconnected, and catches up when the welcome arrives', () => {
     const playing = state({ playing: true })
     apply(playing)
     vi.advanceTimersByTime(3_000)
     apply(playing, false)
     expect(player.getState()).toBe(PlayerState.Paused)
     vi.advanceTimersByTime(5_000)
+    // The status turns open just before the welcome. The old state is stale, so nothing happens.
     apply(playing, true)
+    expect(player.calls).toEqual([`load:${VIDEO}@0`, 'play', 'pause'])
+    apply({ ...playing }) // the welcome's snapshot is a new object
     expect(player.calls).toEqual([`load:${VIDEO}@0`, 'play', 'pause', 'seek:8', 'play'])
   })
 
