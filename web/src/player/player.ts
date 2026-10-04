@@ -48,7 +48,7 @@ export class Listeners<T extends unknown[]> {
 
 /** YouTube errors meaning the video can't be shown in an embed (spec 7.4). */
 export const UNPLAYABLE_ERRORS: readonly number[] = [2, 5, 100, 101, 150]
-/** Our own code: the IFrame API script didn't load. */
+/** Our own code: the YouTube player didn't load (its script failed, it couldn't be created, or it was never ready). */
 export const API_LOAD_FAILED = -1
 
 export function playerErrorMessage(code: number): string {

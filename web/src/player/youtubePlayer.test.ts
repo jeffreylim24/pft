@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { API_LOAD_FAILED, PlayerState } from './player'
 import type { YTNamespace, YTPlayerOptions } from './youtubeApi'
-import { YouTubePlayer } from './youtubePlayer'
+import { READY_TIMEOUT_MS, YouTubePlayer } from './youtubePlayer'
 
 /** Stands in for YT.Player and records every call. */
 class FakeEmbed {
@@ -65,7 +65,14 @@ beforeEach(() => {
 
 afterEach(() => {
   host.remove()
+  vi.useRealTimers()
 })
+
+function errorsOf(p: YouTubePlayer): number[] {
+  const errors: number[] = []
+  p.onError((code) => errors.push(code))
+  return errors
+}
 
 describe('YouTubePlayer', () => {
   it('creates an embed inside the host, without YouTube controls', async () => {
@@ -130,6 +137,41 @@ describe('YouTubePlayer', () => {
     p.onError((code) => errors.push(code))
     await flush()
     expect(errors).toEqual([API_LOAD_FAILED])
+  })
+
+  it("reports API_LOAD_FAILED when YouTube can't create the player", async () => {
+    const Player = function () {
+      throw new Error('blocked by an extension')
+    }
+    const p = new YouTubePlayer(host, () => Promise.resolve({ Player } as unknown as YTNamespace))
+    const errors = errorsOf(p)
+    await flush()
+    expect(errors).toEqual([API_LOAD_FAILED])
+  })
+
+  it('reports API_LOAD_FAILED when the player is never ready', async () => {
+    vi.useFakeTimers()
+    const errors = errorsOf(new YouTubePlayer(host, api))
+    await vi.advanceTimersByTimeAsync(READY_TIMEOUT_MS - 1)
+    expect(errors).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(errors).toEqual([API_LOAD_FAILED])
+  })
+
+  it('no ready timeout once the player is ready, once destroyed, or after another failure', async () => {
+    vi.useFakeTimers()
+    const ready = new YouTubePlayer(host, api)
+    const readyErrors = errorsOf(ready)
+    await vi.advanceTimersByTimeAsync(0)
+    embed().options.events.onReady()
+    const destroyed = new YouTubePlayer(host, api)
+    const destroyedErrors = errorsOf(destroyed)
+    destroyed.destroy()
+    const failed = new YouTubePlayer(host, () => Promise.reject(new Error('blocked')))
+    const failedErrors = errorsOf(failed)
+    await vi.advanceTimersByTimeAsync(READY_TIMEOUT_MS)
+    expect([readyErrors, destroyedErrors, failedErrors]).toEqual([[], [], [API_LOAD_FAILED]])
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('destroy: before the API arrives nothing is created; after, the embed is destroyed', async () => {
