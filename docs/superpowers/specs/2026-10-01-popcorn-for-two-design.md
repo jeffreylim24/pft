@@ -400,22 +400,26 @@ These fill gaps found when the spec was reviewed for implementation. Where they 
 - **Player interface:** `load(videoId, startSeconds?)` cues without playing. Besides the calls in section 4.3, the interface has `setVolume`, `getState`, `onError`, `onAutoplayBlocked` and `destroy`. `getDuration()` is 0 until the video's metadata loads. The IFrame API is typed by hand, so there's no `@types` package.
 - **Getting ready when the room waits for you:**
   - This applies after the client's own stall, and after a reconnect or reload.
-  - The player plays until the video itself has moved on two ticks in a row (ticks are 250 ms apart), so an ad or buffering is over.
-  - Then it pauses, seeks to `position`, and sends `playback.ready` once the player is paused within 0.5 s of it. "Ended" counts as paused, so a room waiting past the end still recovers.
+  - The player plays until the video itself has really moved, so an ad or buffering is over: the player reports Playing and its time has gone more than 1.5 s past where recovery began. YouTube's `getCurrentTime()` estimates up to 1 s ahead of the player's last report while it says Playing, even when the video is stuck behind an ad, so the reading creeps ahead and snaps back. Progress is therefore measured past a high-water mark, reset on every apply, cue and seek. A step counts for no more than the time since the last reading (ticks are 250 ms apart), and a step more than 2 s beyond that is a jump (a cued start arriving late, say), which moves the mark without counting.
+  - The same progress measure drives stall reports, so a stuck player whose reading creeps ahead still stalls, up to 1 s later than the 2 s rule alone would say.
+  - Then it pauses, seeks to `position`, and sends `playback.ready` once the player is paused within 0.5 s of it. "Cued" and "Ended" count as paused, so a room waiting past the end still recovers.
   - Cueing and seeking can't avoid playing, because YouTube starts a cued video when it's seeked. The person being waited for may hear a fraction of a second of audio.
-  - If the player has already ended, or the room's position is past the end, the client doesn't play, because that would start the video over. It pauses at the position and says ready.
+  - If the player has already ended, or the room's position is past the end, the client doesn't play, because that would start the video over. It pauses at the position and says ready. The "past the end" check needs the duration, so it applies only once the duration is known. After a reload the duration is 0, so the client cues at the position and plays. How YouTube handles a start past the end is unverified.
+  - The same goes for a playing room: a player that has ended is never told to play, even if the room's expected position is still just short of the end.
   - If the player reaches the end before the room's position, the client seeks back to the position and then says ready.
   - If the player reports an error while the room waits for it, the client sends `playback.ready` at once, so an unplayable video never holds the partner.
-- **While the WebSocket is down:** the local player pauses, and no `stalled` or `ready` is sent. After the next `welcome`, the snapshot is applied as new.
+- **While the WebSocket is down:** the local player pauses, and no `stalled` or `ready` is sent. After the next `welcome`, the snapshot is applied as new. The connection status turns open just before the welcome arrives, so the client doesn't apply the stale pre-drop state then: it waits for the welcome's new playback state.
 - **Small sync rules:**
   - A paused player more than 0.25 s from the room position is seeked. One that is cued, unstarted or ended is cued again at the position instead, because seeking it would start it.
   - If YouTube starts playing while the room is paused, the client pauses it again.
   - Drift checks skip a player that isn't reporting "playing".
   - A player error stops stall reports.
-- **Blocked autoplay:** when YouTube reports `onAutoplayBlocked`, the stage shows "Your browser blocked the video from playing." with **Start video**, and the video itself becomes clickable until it plays. Until then the stall rule makes the room wait for that person.
+- **Blocked autoplay:** when YouTube reports `onAutoplayBlocked`, the stage shows "Your browser blocked the video. Click the video to start it." with **Start video** as a second way in, and the video itself becomes clickable until it plays. The prompt points at the video because Safari may not count a click on our page as a user gesture inside YouTube's cross-origin iframe. Until then the stall rule makes the room wait for that person.
+- **Clickable while the room waits for you:** the video also takes clicks while the room's `waitingFor` is you, so YouTube's Skip ad button works and an ad doesn't hold the partner for its whole length. Otherwise, apart from blocked autoplay, the player layer and its iframe ignore the pointer (section 5).
+- **A player that never loads:** if the YouTube player can't be created, or doesn't become ready within 15 s (YouTube's second script blocked, or the iframe replaced by a privacy extension), the client shows the "didn't load" message, the same as a failed IFrame API script. The error rule (no stall reports, and `ready` at once while the room waits) keeps the room from being held.
 - **Controls:**
   - Play and Pause send the room's expected position, clamped to the duration. Play at or past the end sends 0.
-  - The seek bar shows the room's time and sends one `playback.seek` when released.
+  - The seek bar shows the room's time and sends one `playback.seek` on the input's native `change` event, which fires once when a drag ends and once per key step. Dragging only moves the bar. If the connection drops mid-drag, the drag is dropped and never sent.
   - The time display uses `serverNow()`, not the local player.
   - The volume slider sets this browser's YouTube volume only, and isn't saved.
 - **Notices:**
@@ -423,5 +427,5 @@ These fill gaps found when the spec was reviewed for implementation. Where they 
   - YouTube errors 2, 5, 100, 101 and 150 show "This video can't be played here."
   - A failed IFrame API script shows its own message, and other error codes show the number.
 - **Player facts:** the video's duration, a player error, blocked autoplay and the volume live in `player/store.ts`, apart from the room store, because they never go over the wire. Only `PlaybackSync` and the volume slider write them.
-- **FakePlayer** copies YouTube's quirks the sync logic depends on: a cued video doesn't play until told to; seeking a cued, unstarted or ended video starts it; `play()` after the end starts over; the duration is 0 until the video first plays; and the end is reported as an `Ended` state change as soon as any command or state read catches up with the clock.
+- **FakePlayer** copies YouTube's quirks the sync logic depends on: a cued video doesn't play until told to; seeking a cued, unstarted or ended video starts it; `play()` after the end starts over; the duration is 0 until the video first plays; and the end is reported as an `Ended` state change as soon as any command or state read catches up with the clock. With `estimateAhead`, it reads the time the way YouTube's widget does while playing: its last report plus the time since, up to 1 s.
 - **Known trade-off:** the server auto-pauses a stall at the expected position, about 2 seconds past where the stalled player froze, so that person skips those seconds. Fixing it would need a `position` on `playback.stalled`.
